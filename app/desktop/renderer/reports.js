@@ -171,6 +171,26 @@
     if (source) return source === 'local-template';
     return by === 'local-template' || by === 'local' || by === 'template' || by === 'fallback';
   }
+  /**
+   * 修订入口类型（2026-11-13 澄清）：当前架构 AI（模型 API）只产出/修订文字叙述，
+   * HTML 版式由本地 report_pipeline 模板固定渲染，AI 无法修改 HTML 格式。
+   * - narrative：local-ai 报告，修订=重写 AI 文字后本地重渲染（版式不变）
+   * - none：local-template 报告（无 AI 叙述），不提供修订
+   */
+  function reviseMode(report) {
+    var meta = (report && report.meta) || {};
+    var source = String(meta.source || '').toLowerCase();
+    if (source === 'local-template' || isLocalTemplate(report)) return 'none';
+    return 'narrative';
+  }
+  function reviseButtonHtml(report) {
+    if (reviseMode(report) === 'none') return '';
+    return '<button class="btn btn-sm btn-ghost" data-act="revise-report" title="只重写 AI 文字叙述，HTML 版式/图表由本地模板固定渲染">' + FS.icon('edit') + '修订叙述</button>';
+  }
+  function reviseHintHtml(report) {
+    if (reviseMode(report) !== 'none') return '';
+    return '<div class="field-hint">本地模板报告没有 AI 文字叙述，无法修订；如需 AI 叙述，请在「设置 → 模型 API」配置并测试连接后重新生成报告。</div>';
+  }
   function reportModeTag(report) {
     if (isLocalTemplate(report)) return '<span class="tag tag-warn report-local-tag">本地模板</span>';
     if (report && report.status === 'degraded') return '<span class="tag tag-warn report-local-tag">AI 叙述降级</span>';
@@ -399,6 +419,8 @@
   function renderForm() {
     var box = viewEl && viewEl.querySelector('#report-form-body');
     if (!box) return;
+    /* 表单重建会移除旧输入框，先收起日期浮层，避免浮层悬挂在 body 上 */
+    if (FS.DatePicker) FS.DatePicker.closeAll();
     ensureForm();
     var f = state.form;
     var reportCount = state.reports.length;
@@ -407,9 +429,9 @@
       '<div class="form report-form-fields">' +
         '<div class="form-cols">' +
           '<div class="field"><label class="field-label" for="report-start">开始日期</label>' +
-            '<input class="input" type="date" id="report-start" data-field="start" aria-describedby="report-date-hint" value="' + FS.escape(f.start) + '"></div>' +
+            '<input class="input" type="text" id="report-start" data-field="start" readonly aria-describedby="report-date-hint" placeholder="请选择开始日期" autocomplete="off" value="' + FS.escape(f.start) + '"></div>' +
           '<div class="field"><label class="field-label" for="report-end">结束日期</label>' +
-            '<input class="input" type="date" id="report-end" data-field="end" aria-describedby="report-date-hint" value="' + FS.escape(f.end) + '"></div>' +
+            '<input class="input" type="text" id="report-end" data-field="end" readonly aria-describedby="report-date-hint" placeholder="请选择结束日期" autocomplete="off" value="' + FS.escape(f.end) + '"></div>' +
         '</div>' +
         '<div class="field-hint" id="report-date-hint">默认最近 7 天；开始日期不能晚于结束日期。</div>' +
         '<div class="field">' +
@@ -432,7 +454,17 @@
       '</div>';
     renderPlatformChecks();
     renderKeywordChecks();
+    mountDatePickers();
     updateFormState();
+  }
+
+  /** 接入 Ant Design 风格日期选择器（纯原生实现，静态预览同样可用） */
+  function mountDatePickers() {
+    if (!FS.DatePicker || !viewEl) return;
+    var startEl = viewEl.querySelector('#report-start');
+    var endEl = viewEl.querySelector('#report-end');
+    if (startEl) FS.DatePicker.mount(startEl);
+    if (endEl) FS.DatePicker.mount(endEl);
   }
 
   function renderKeywordChecks() {
@@ -547,6 +579,11 @@
   function safeRenderForm() {
     var active = document.activeElement;
     if (active && viewEl && viewEl.contains(active) && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+      updateFormState();
+      return;
+    }
+    /* 日期选择浮层打开时同样不重建表单，避免打断用户选择 */
+    if (FS.DatePicker && FS.DatePicker.isAnyOpen && FS.DatePicker.isAnyOpen()) {
       updateFormState();
       return;
     }
@@ -775,6 +812,9 @@
           : (r.status === 'degraded'
             ? '本报告 HTML 已保存到本机；本次模型 API 调用不可用，AI 叙述降级为规则叙述，可直接在系统浏览器查看。'
             : '报告 HTML 由本地服务生成并保存在本机，可直接在系统浏览器中查看；自包含 CSS/图表，无需联网。')) + '</p>' +
+        (reviseMode(r) === 'narrative'
+          ? '<div class="field-hint">模型 API 仅生成文字叙述；HTML 版式、图表与章节由本地模板固定渲染，修订只改文字。</div>'
+          : '') +
         (path
           ? '<div class="report-file-row">' + FS.icon('report') + '<code title="' + FS.escape(path) + '">' + FS.escape(FS.shortPath(path, 58)) + '</code></div>'
           : '<div class="report-file-row is-warn">' + FS.icon('warn') + '<span>本地服务未返回 file_path，无法从应用内打开。</span></div>') +
@@ -782,12 +822,13 @@
           ? '<div class="report-html-actions">' +
               '<button class="btn btn-sm btn-primary" data-act="open-report"' + (openEnabled ? '' : ' disabled') + ' title="' + (openEnabled ? '用系统默认浏览器打开本地 HTML 报告' : '本地服务未返回报告文件路径') + '">' + FS.icon('external') + '在浏览器打开</button>' +
               (path ? '<button class="btn btn-sm btn-ghost" data-act="open-report-folder">' + FS.icon('folder') + '打开所在文件夹</button>' : '') +
-              '<button class="btn btn-sm btn-ghost" data-act="revise-report">' + FS.icon('edit') + '修订</button>' +
+              reviseButtonHtml(r) +
             '</div>'
           : '<div class="report-html-actions">' +
-              '<button class="btn btn-sm btn-ghost" data-act="revise-report">' + FS.icon('edit') + '修订</button>' +
+              reviseButtonHtml(r) +
               '<button class="btn btn-sm btn-ghost" data-act="refresh-report">' + FS.icon('refresh') + '刷新报告状态</button>' +
             '</div>') +
+        reviseHintHtml(r) +
       '</div>' +
     '</div>';
   }
@@ -1136,15 +1177,26 @@
       FS.toast({ tone: 'info', title: '报告尚未完成', text: '请等待生成完成后再修订。' });
       return;
     }
+    var mode = reviseMode(report);
+    if (mode === 'none') {
+      FS.toast({
+        tone: 'info',
+        title: '本地模板报告不支持修订',
+        text: '当前报告没有 AI 文字叙述；如需 AI 叙述，请先在「设置 → 模型 API」配置并测试连接后重新生成报告。'
+      });
+      return;
+    }
+    // 当前架构：模型 API 只产出/修订文字叙述，HTML 版式由本地 report_pipeline 模板固定渲染（AI 无法改 HTML 格式）。
+    var submitText = '生成新叙述';
     var instruction = '';
     var modal = FS.modal({
-      title: '修订周报',
-      subtitle: '基于 v' + report.version + ' 重新生成叙述与 HTML',
+      title: '修订 AI 叙述（只改文字）',
+      subtitle: '基于 v' + report.version + ' 的统计快照重新生成 AI 文字叙述；HTML 由本地模板重渲染（版式不变）',
       size: 'lg',
       body: '<div class="form">' +
         '<div class="field"><label class="field-label" for="report-revise-input">修订说明<span class="optional">必填</span></label>' +
-          '<textarea class="textarea" id="report-revise-input" rows="4" placeholder="例如：把情感分布改成环形图；突出负面舆情 Top3；增加平台对比小节。"></textarea>' +
-          '<div class="field-hint">修订会保留本机统计快照，只重新调用模型 API 生成叙述与 HTML；版本号自动 +1。</div>' +
+          '<textarea class="textarea" id="report-revise-input" rows="4" placeholder="例如：语气更正式；补充负面舆情处置建议；给评论区的负面反馈增加回应口径。"></textarea>' +
+          '<div class="field-hint">修订会保留本机统计快照与固定 HTML 模板，只重新生成 AI 文字叙述并本地重渲染，版本号自动 +1；<b>AI 无法修改 HTML 版式、图表或章节结构</b>。</div>' +
         '</div>' +
         '<div class="banner banner-info"><span class="banner-icon">' + FS.icon('info') + '</span><div class="banner-body">当前版本 v' + FS.escape(String(report.version)) +
           ' · ' + FS.escape(reportWindow(report.meta)) + '</div></div>' +
@@ -1152,7 +1204,7 @@
       '</div>',
       footer: '<span class="foot-left">修订不会影响已采集数据</span>' +
         '<button class="btn btn-ghost" data-revise-cancel>取消</button>' +
-        '<button class="btn btn-primary" data-revise-submit>' + FS.icon('edit') + '提交修订</button>',
+        '<button class="btn btn-primary" data-revise-submit>' + FS.icon('edit') + submitText + '</button>',
       onMount: function (el, handle) {
         var input = el.querySelector('#report-revise-input');
         var errEl = el.querySelector('[data-revise-error]');
@@ -1196,11 +1248,15 @@
             updateFormState();
             schedulePoll(report.report_id, 800);
             loadReports(true);
-            FS.toast({ tone: 'success', title: '修订已提交', text: '正在生成 v' + newVersion + '，完成后自动刷新。' });
+            FS.toast({
+              tone: 'success',
+              title: '修订已提交',
+              text: '正在生成 v' + newVersion + ' 的新叙述（HTML 模板重渲染中）…'
+            });
           } catch (err) {
             state.revising = false;
             submitBtn.disabled = false;
-            submitBtn.innerHTML = FS.icon('edit') + '提交修订';
+            submitBtn.innerHTML = FS.icon('edit') + submitText;
             errEl.hidden = false;
             errEl.textContent = FS.errText(err, '修订提交失败');
             FS.toast({ tone: 'error', title: '修订失败', text: FS.errText(err) });
@@ -1364,6 +1420,7 @@
       stopPoll();
       stopTicker();
       stopConnectionWatch();
+      if (FS.DatePicker) FS.DatePicker.closeAll();
       unbindEvents(viewEl);
     }
   };

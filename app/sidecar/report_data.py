@@ -1183,11 +1183,26 @@ def _build_samples(dataset: Any, stats: Dict[str, Any], *, max_samples: int = 20
     positive = sorted([item for item in contents if item.get("sentiment") == "positive"],
                       key=lambda item: (-float(item.get("heat_score") or 0.0), item.get("content_id", "")))
     top_comments = sorted(comments, key=lambda item: (-int(item.get("likes") or 0), item.get("comment_id", "")))
+    # 负面评论样例：第四章「重点负面舆情事件」只列负面内容帖，无负面内容帖但评论区负面占比高时，
+    # AI 需要这些样例才能正确说明「风险来自评论区」，避免写出「未识别到负面内容、舆情面平稳」。
+    negative_comments = sorted(
+        [item for item in comments if item.get("sentiment") == "negative"],
+        key=lambda item: (-int(item.get("likes") or 0), item.get("comment_id", "")),
+    )
     keywords = stats.get("keywords") or {}
     hot = [item["keyword"] for item in (keywords.get("related") or [])[:10]] or \
           [item["keyword"] for item in (keywords.get("top") or [])[:10]]
     return {
         "negative": [_sample_from_content(item) for item in negative[:max_samples]],
+        "negative_comments": [
+            {
+                "platform": _platform_code(item),
+                "content": _truncate(item.get("text") or item.get("summary") or "", 160),
+                "likes": int(item.get("likes") or 0),
+                "published_at": item.get("published_at", ""),
+            }
+            for item in negative_comments[:10]
+        ],
         "positive": [_sample_from_content(item) for item in positive[:max_samples]],
         "top_comments": [
             {

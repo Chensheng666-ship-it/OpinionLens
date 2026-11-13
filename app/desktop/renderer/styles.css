@@ -1788,3 +1788,201 @@ code.kv-value { font-family: var(--font-mono); font-size: var(--text-2xs); }
   .qr-layout { grid-template-columns: 1fr; }
   .qr-login-panel .qr-pane { align-items: flex-start; }
 }
+
+/* ============================================================================
+   [OpinionLens] 日期选择器（Ant Design 风格，纯原生实现，逻辑见 renderer/datepicker.js）
+   - 输入框外包 .date-picker（右侧日历图标）；浮层 .date-picker-panel 挂在 body 上
+   - 背景/文字/边框沿用现有主题变量；选择态使用品牌深海青主色（--accent）
+   ============================================================================ */
+
+/* ============================================================================
+   日期选择器（Ant Design 风格，纯原生实现，逻辑见 renderer/datepicker.js）
+   - 输入框外包 .date-picker（右侧日历图标）；浮层 .date-picker-panel 挂在 body 上
+   - 背景/文字/边框沿用现有主题变量（:root 若后续切换暗色主题会自动跟随）；
+     选择态使用品牌深海青主色（默认取 --accent），需要换主色时只改 --dp-primary 系列即可
+   ============================================================================ */
+.date-picker {
+  --dp-primary: var(--accent);
+  --dp-primary-hover: #14b8a6;
+  --dp-primary-soft: var(--accent-soft);
+  position: relative;
+  display: block;
+  width: 100%;
+}
+.date-picker > .input { padding-right: 30px; cursor: pointer; }
+.date-picker.is-open > .input { border-color: var(--dp-primary); box-shadow: 0 0 0 2px rgba(15, 118, 110, .12); }
+.date-picker-suffix {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.date-picker-suffix svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.date-picker-suffix:hover,
+.date-picker.is-open .date-picker-suffix { color: var(--dp-primary); }
+
+.date-picker-panel {
+  --dp-primary: var(--accent);
+  --dp-primary-hover: #14b8a6;
+  --dp-primary-soft: var(--accent-soft);
+  position: fixed;
+  z-index: var(--z-dropdown);
+  width: 280px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 6px 16px rgba(23, 26, 31, .10), 0 3px 6px -4px rgba(23, 26, 31, .14), 0 9px 28px 8px rgba(23, 26, 31, .06);
+  font-size: var(--text-sm);
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.date-picker-panel.is-open { opacity: 1; transform: translateY(0); }
+
+.date-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px;
+  height: 38px;
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.date-picker-nav {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.date-picker-nav svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.date-picker-nav:hover { background: var(--surface-3); color: var(--ink); }
+.date-picker-title { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 2px; }
+.date-picker-title-btn {
+  height: 28px;
+  padding: 0 6px;
+  border-radius: var(--r-sm);
+  font-size: var(--text-base);
+  font-weight: var(--fw-semibold);
+  color: var(--ink);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.date-picker-title-btn:hover { background: var(--surface-3); color: var(--dp-primary-hover); }
+.date-picker-title-text { padding: 0 6px; font-size: var(--text-base); font-weight: var(--fw-semibold); color: var(--ink); }
+
+.date-picker-body { height: 228px; display: flex; flex-direction: column; justify-content: center; }
+.date-picker-days { display: flex; flex-direction: column; gap: 2px; }
+.date-picker-week,
+.date-picker-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.date-picker-week { height: 24px; align-items: center; text-align: center; font-size: var(--text-2xs); color: var(--ink-3); }
+.date-picker-cell {
+  position: relative;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.date-picker-cell:hover { background: var(--dp-primary-soft); }
+/* 上下月日期用次级文字灰（--ink-3 满足正文对比度，仍与当月 --ink 区分） */
+.date-picker-cell.is-outside { color: var(--ink-3); }
+.date-picker-cell.is-today::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--dp-primary);
+  border-radius: var(--r-sm);
+  pointer-events: none;
+}
+.date-picker-cell.is-selected,
+.date-picker-cell.is-selected:hover { background: var(--dp-primary); color: #fff; font-weight: var(--fw-semibold); }
+.date-picker-cell.is-selected.is-today::before { border-color: transparent; }
+
+.date-picker-months,
+.date-picker-years {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-content: center;
+  gap: 6px 8px;
+  padding: 0 2px;
+}
+.date-picker-opt {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-sm);
+  font-size: var(--text-sm);
+  color: var(--ink);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.date-picker-opt:hover { background: var(--dp-primary-soft); }
+.date-picker-opt.is-selected { background: var(--dp-primary); color: #fff; font-weight: var(--fw-semibold); }
+
+.date-picker-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 6px 4px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.date-picker-action {
+  height: 26px;
+  padding: 0 6px;
+  border-radius: var(--r-sm);
+  font-size: var(--text-xs);
+  color: var(--dp-primary);
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.date-picker-action:hover { background: var(--dp-primary-soft); color: var(--dp-primary-hover); }
+.date-picker-action-clear { color: var(--ink-2); }
+.date-picker-action-clear:hover { color: var(--ink); }
+
+.date-picker-nav:focus-visible,
+.date-picker-title-btn:focus-visible,
+.date-picker-cell:focus-visible,
+.date-picker-opt:focus-visible,
+.date-picker-action:focus-visible { outline: 2px solid var(--dp-primary); outline-offset: -2px; }
+/* 选中态是蓝底，焦点描边改用白色，保证键盘焦点可见 */
+.date-picker-cell.is-selected:focus-visible,
+.date-picker-opt.is-selected:focus-visible { outline-color: #fff; }
+

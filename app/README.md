@@ -56,6 +56,9 @@ build\installer\output\OpinionLens-portable-<version>.zip
      **每个平台每个关键词采集 15 条内容，并抓取每条内容最多 20 条评论**；如需调整属于高级场景，由研发通过任务参数处理。
    - 运行详情显示各平台进度与「采集动态」：实时展示抓到的帖子（平台/作者/发布时间/标题正文/点赞评论收藏分享）
      与评论内容，数据口径与 Excel 导出一致；技术日志折叠在页面底部，排查问题时展开。
+     - 帖子/评论时间显示**完整日期时间**（`YYYY-MM-DD HH:mm`，含年份，跨年数据可区分；悬停显示含秒）；
+     - 每条帖子右下角**原文链接点击后用系统默认浏览器打开**（主进程 `shell.openExternal`，仅允许 http/https），不再复制链接；
+       「复制摘要」等功能保留。
    - 单平台失败不影响其它平台；可「停止」，失败/跳过的平台可「继续采集」。
 4. **断点续采**：采集任务中途异常退出/程序被关后，任务会在重启后标记为「失败」，打开该任务详情：
    - 点「**继续采集未完成平台（N）**」：只续跑 failed / skipped / queued 的平台，已完成的平台数据保留；
@@ -150,7 +153,8 @@ AI 报告的**统计**完全由本地完成（`app/report_pipeline` + `report_da
 只有「AI 叙述」需要外部模型能力。支持 OpenAI 兼容（含 DeepSeek/Ollama/vLLM/中转站）、DeepSeek、Anthropic，
 多套配置/默认模型/测试连接均在「设置 → 模型 API」中完成（见根目录 `README.md` 的「设置中心」）。
 
-- **未配置/调用失败时**：自动使用本地模板渲染 HTML（状态 `degraded`），报告不失败、仍可打开与修订；
+- **未配置/调用失败时**：自动使用本地模板渲染 HTML（状态 `degraded`），报告不失败、仍可打开；本地模板报告没有 AI 文字叙述，
+  UI 不提供修订入口（如需 AI 叙述，先在「设置 → 模型 API」配置并测试连接后重新生成）；
 - **AI 叙述产物**：本地渲染 HTML 落盘到 `<data-dir>/reports/<report_id>/v1.html`，版本历史保留；
 - **隐私**：仅向用户配置的模型服务发送统计后的数据包（不发送登录态、Cookie、账号凭据与原始用户 ID/昵称等字段）。
 
@@ -246,6 +250,9 @@ UI 只调 sidecar API（后台线程生成，不阻塞界面）。
 本地报告产物：`<data-dir>/reports/<report_id>/meta.json`（状态/版本/错误，重启可读）、`v1.html`、`v2.html`…、
 `narrative_v{n}.json`（模型叙述缓存，修订用）。
 
+**日期选择（2026-11-13）**：开始/结束日期改为 **Ant Design 风格日历浮层**（纯原生 JS 实现，不引入第三方库/CDN）：
+点击日期框弹出日历，支持年/月面板切换、上月/下月、今天/清空与键盘操作，不再使用浏览器原生 `<input type="date">`。
+
 > **趋势图交互**：报表内「声量趋势」折线/柱状图支持**滚轮缩放、拖动平移、双击重置**；日期跨度 >45 天时默认聚焦
 > 最近 30 天，x 轴自动抽稀避免标签重叠，点「显示全部」恢复完整时间范围。旧 HTML 报告不会追溯更新，重新生成即可。
 
@@ -257,7 +264,7 @@ UI 只调 sidecar API（后台线程生成，不阻塞界面）。
 | GET | `/api/reports` | 报告列表（status/stage/progress/版本/窗口/错误/`html_available`） |
 | GET | `/api/reports/{id}` | 详情：`title`、status∈queued/running/completed/degraded/failed、stage、progress、current_version、versions[]、error、`html_available`、`file_path`、`narrative_generated_by`、`ai_fallback_reason`、`meta` |
 | GET | `/api/reports/{id}/html?version=` | 读取本地 HTML：`{report_id,version,html,html_sha256,bytes}`（默认最新版） |
-| POST | `/api/reports/{id}/revise` | 修订：`{instruction, base_version?}`；模型可用时用模型基于上一版叙述重写，否则本地模板重渲染新版本 `202` |
+| POST | `/api/reports/{id}/revise` | 修订：`{instruction, base_version?}`；**模型 API 只重写文字叙述，HTML 由本地模板重渲染（版式不变）**；`source=local-ai` 报告可用，`source=local-template`（无 AI 叙述）UI 不提供修订入口；返回 `202` |
 | POST | `/api/reports/{id}/open` | 返回本地 `file_path` 供 UI `shell.openPath` |
 | GET | `/api/reports/config` | `{configured, provider_id, provider_name, kind, model, base_url(脱敏), token_configured, degraded_fallback, report_data_ready, schema_version, ...}`（不返回 key） |
 | GET | `/api/reports/capabilities` | 设置页「测试连接」：测试默认模型 provider，始终 200 + `{ok,error?,model,latency_ms}` |
@@ -279,8 +286,14 @@ completed`；模型失败回退本地模板时状态 `degraded`（HTML 仍可用
   - 未配置模型 → 直接用**本地模板**渲染 v1（`narrative_generated_by="local-template"`、
     `source="local-template"`、状态 `degraded`），HTML/file_path/历史 meta 正常；
   - 已配置但模型调用失败（网络/HTTP/超时/返回无法解析）同样回退本地模板，**不标 failed**（`ai_fallback_reason` 写明原因）；
-  - 本地模板报告支持修订：用保存的 `package.json`/`stats.json` 同数据重渲染新版本并附修订说明（无需模型连接）；
-    模型恢复后新生成会重新尝试 AI 叙述。
+  - **修订语义（2026-11-13）**：模型 API 只产出/修订**文字叙述**，HTML 版式/图表/章节由本地模板固定渲染，AI 无法修改 HTML 格式。
+    `source=local-ai` 报告按钮为「修订叙述」，弹窗说明「只重写文字后本地重渲染，版式不变、版本号 +1」；
+    `source=local-template` 报告（无 AI 叙述）UI **隐藏修订入口**，提示先在「设置 → 模型 API」配置并测试连接后重新生成；
+    旧版本/API 的同数据重渲染能力保留用于兼容。
+  - **风险等级与「重点负面事件」口径（2026-11-13 修复）**：风险等级按全量（内容帖 + 评论）负面占比判定，而第四章表格只列
+    负面内容帖；当本期无负面内容帖、但评论负面占比高时，报告会说明「风险由评论区负面情绪驱动」（风险卡副标题显示
+    `重点负面事件 N 起 · 负面评论 M 条`，第四章空表给出评论负面说明），模型叙述也会在本地渲染前做口径纠偏，
+    不再出现「风险等级高但未识别到负面内容、舆情面平稳」的矛盾。
 - 依赖：`app/sidecar/report_data.py`（DB→统计→数据包+情感缓存）、`app/report_pipeline/`（统计与模板）与 exporter；
   未就绪时报告生成写接口返回 `503 REPORT_DATA_UNAVAILABLE`（不影响 sidecar 启动与其它功能）。
 

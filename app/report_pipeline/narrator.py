@@ -236,12 +236,33 @@ def _build_negative(stats: Dict[str, Any]) -> Dict[str, Any]:
     risk = stats["risk"]
     total_negative = int(risk["negative_events"])
     shown = len(events)
-    negative_comments = sent["comments"]["negative"]["count"]
+    # 负面评论口径：优先用 risk 里的新字段（与风险等级 basis 对齐），旧 stats 回退到 sentiment.comments
+    negative_comments = int(
+        risk.get("negative_comments", sent["comments"]["negative"]["count"]) or 0
+    )
+    comment_negative_ratio = float(
+        risk.get("comment_negative_ratio", sent["comments"]["negative"]["ratio"]) or 0.0
+    )
+    overall_negative_ratio = float(
+        risk.get("negative_ratio", sent["overall"]["negative"]["ratio"]) or 0.0
+    )
+    risk_level_code = str(risk.get("level_code") or "")
     archived = [e for e in events if e["handling_code"] == "archived"]
     fresh = [e for e in events if e["handling_code"] != "archived"]
     shown_hint = f"共 {total_negative} 起，按热度分取前 {shown} 起展示" if total_negative > shown else f"共 {total_negative} 起"
+    comment_driven = bool(not events and negative_comments > 0 and risk_level_code in ("medium", "high"))
     if not events:
-        intro = "本期未识别到负面内容，舆情面平稳。"
+        if comment_driven:
+            # 风险等级来自「全量（内容+评论）」负面占比，而第四章只列负面内容帖：必须说明由评论区驱动，
+            # 否则会出现「风险高但没有识别到负面事件、舆情面平稳」的自相矛盾。
+            intro = (
+                f"本期未识别到负面内容帖；但评论区存在 {_n(negative_comments)} 条负面评论"
+                f"（占评论 {_pct(comment_negative_ratio)}、占全量样本 {_pct(overall_negative_ratio)}），"
+                f"风险等级「{risk['level']}」主要由评论区负面情绪驱动，建议重点排查评论区诉求"
+                "（如用工、服务、售后等）并准备回应口径。"
+            )
+        else:
+            intro = "本期未识别到负面内容，舆情面平稳。"
     elif not fresh:
         oldest = max(events, key=lambda e: e["days_old"])
         intro = (
@@ -255,6 +276,12 @@ def _build_negative(stats: Dict[str, Any]) -> Dict[str, Any]:
             f"其中 {len(fresh)} 起为近 180 天内新增，建议优先跟进。"
         )
     entity_risk_events = [e for e in events if e.get("entity_risk")]
+    comment_note = (
+        f"本期负面互动集中在评论区：负面内容帖 {total_negative} 起、负面评论 {_n(negative_comments)} 条"
+        f"（占评论 {_pct(comment_negative_ratio)}）；风险等级按全量（内容 + 评论）负面占比判定。"
+        if comment_driven
+        else ""
+    )
     note = (
         "POC 环境无工单系统数据，「当前状态」由数据规则自动标注：发布时间超过 180 天标记为"
         "「历史存量·已沉淀」；近 14 天仍有负面评论互动的标记为「持续观察」；其余标记为「待评估」。"
@@ -265,6 +292,7 @@ def _build_negative(stats: Dict[str, Any]) -> Dict[str, Any]:
             if entity_risk_events
             else ""
         )
+        + comment_note
         + f"风险等级「{risk['level']}」：{risk['basis']}。"
     )
     return {

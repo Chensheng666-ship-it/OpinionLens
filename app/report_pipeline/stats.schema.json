@@ -143,7 +143,10 @@
         "level_code": {"type": "string", "enum": ["low", "medium", "high"]},
         "negative_ratio": {"type": "number", "minimum": 0, "maximum": 1},
         "content_negative_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "comment_negative_ratio": {"type": "number", "minimum": 0, "maximum": 1, "description": "评论负面占比（风险等级按全量负面占比判定，此字段用于说明口径）"},
         "negative_events": {"type": "integer", "minimum": 0},
+        "negative_comments": {"type": "integer", "minimum": 0, "description": "负面评论条数"},
+        "risk_driver": {"type": "string", "enum": ["none", "content", "comments", "both", "mixed"], "description": "风险等级主要驱动来源：内容帖/评论/两者"},
         "thresholds": {
           "type": "object",
           "required": ["low", "medium"],
@@ -325,6 +328,7 @@
       "required": ["negative", "positive", "top_comments", "hot_keywords"],
       "properties": {
         "negative": {"type": "array", "items": {"type": "object"}},
+        "negative_comments": {"type": "array", "items": {"type": "object"}, "description": "高赞负面评论样例（无负面内容帖时用于说明评论区风险）"},
         "positive": {"type": "array", "items": {"type": "object"}},
         "top_comments": {"type": "array", "items": {"type": "object"}},
         "hot_keywords": {"type": "array", "items": {"type": "string"}}

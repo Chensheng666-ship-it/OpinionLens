@@ -415,7 +415,8 @@ def test_package_and_sentiment(media_db: str, app_db: str) -> None:
     schema_errors = _stats_schema_errors(stats)
     check("stats 通过 POC stats.schema.json（与 8000 同 schema）",
           schema_errors == [], "; ".join(schema_errors[:5]))
-    check("samples 含四类", set(package["samples"]) == {"negative", "positive", "top_comments", "hot_keywords"})
+    check("samples 含五类（新增负面评论样例）",
+          set(package["samples"]) == {"negative", "negative_comments", "positive", "top_comments", "hot_keywords"})
     check("samples/contents 条数有界",
           len(package["samples"]["negative"]) <= 20 and len(package["samples"]["positive"]) <= 20
           and len(package["samples"]["top_comments"]) <= 20 and len(package["contents"]) <= 500)

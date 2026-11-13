@@ -140,6 +140,11 @@ def _render_overview_cards(stats: Dict[str, Any]) -> str:
     totals = stats["totals"]
     sent = stats["sentiment"]["overall"]
     risk = stats["risk"]
+    # 风险等级按全量（内容+评论）负面占比判定；副标题同时给出负面内容帖与负面评论，避免口径误解
+    negative_comments = int(risk.get("negative_comments", stats["sentiment"]["comments"]["negative"]["count"]) or 0)
+    risk_sub = f'重点负面事件 {_n(risk["negative_events"])} 起'
+    if negative_comments > 0:
+        risk_sub += f' · 负面评论 {_n(negative_comments)} 条'
     cards = [
         f'<div class="card"><div class="label">本期总声量</div>'
         f'<div class="value"{_attr("totals.items", totals["items"])}>{_n(totals["items"])} '
@@ -157,7 +162,7 @@ def _render_overview_cards(stats: Dict[str, Any]) -> str:
         f'<div class="value"{_attr("risk.level", risk["level"])} style="color:'
         + {"low": "#16a34a", "medium": "#d97706", "high": "#dc2626"}.get(risk["level_code"], "#0f766e")
         + f'">{risk["level"]}</div>'
-        f'<div class="sub">重点负面事件 {_n(risk["negative_events"])} 起</div></div>',
+        f'<div class="sub">{risk_sub}</div></div>',
     ]
     return "\n".join(cards)
 
@@ -245,7 +250,20 @@ def _render_negative_table(stats: Dict[str, Any], narrative: Dict[str, Any], sou
             "</tr>"
         )
     if not rows:
-        rows.append('<tr><td colspan="8">本期未识别到负面事件</td></tr>')
+        # 风险等级按全量（内容+评论）负面占比判定，本章节只列负面内容帖；两者不一致时要在空表里说明，
+        # 不能只说「未识别到负面事件」，否则与「风险等级高」矛盾（客户反馈过）。
+        risk = stats.get("risk") or {}
+        comment_block = ((stats.get("sentiment") or {}).get("comments") or {}).get("negative") or {}
+        negative_comments = int(risk.get("negative_comments", comment_block.get("count", 0)) or 0)
+        comment_ratio = risk.get("comment_negative_ratio", comment_block.get("ratio", 0.0))
+        if negative_comments > 0:
+            empty_text = (
+                f"本期未识别到负面内容帖；负面互动集中在评论区：负面评论 {_n(negative_comments)} 条"
+                f"（占评论 {_pct(comment_ratio)}），风险等级「{risk.get('level', '')}」由全量负面占比判定（详见下方状态说明）。"
+            )
+        else:
+            empty_text = "本期未识别到负面事件"
+        rows.append(f'<tr><td colspan="8">{empty_text}</td></tr>')
     return "\n".join(rows)
 
 

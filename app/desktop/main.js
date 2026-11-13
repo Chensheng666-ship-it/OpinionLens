@@ -5,7 +5,7 @@
 //   1. 生成随机 token / sidecar 自选随机端口（--port 0）
 //   2. spawn Python sidecar：python app/sidecar/main.py --port 0 --token <t> --data-dir <abs>
 //   3. 解析 stdout 的 ##SIDECAR_READY##{"port":N}，/health 通过后创建 1400×900 窗口
-//   4. IPC：app:info / app:openPath / app:showItemInFolder
+//   4. IPC：app:info / app:openPath / app:showItemInFolder / app:openExternal
 //   5. 退出时杀掉 sidecar 进程树；sidecar 启动失败时窗口内显示可读错误（绝不白屏）
 //   6. 开发辅助：--screenshot <out.png>（加载后 2.5s 截图退出）、--no-sidecar（仅 UI）
 //
@@ -870,6 +870,38 @@ function registerIpc() {
     }
     shell.showItemInFolder(path.resolve(targetPath));
     return { ok: true };
+  });
+
+  // 采集动态「原文链接」：交给系统浏览器打开（renderer 被禁止直接弹窗/导航外部 URL）。
+  // 安全：仅放行 http/https 且长度 ≤2048；日志只记 host，不落完整 URL。
+  ipcMain.handle('app:openExternal', async (_event, url) => {
+    if (typeof url !== 'string' || url.trim() === '') {
+      return { ok: false, error: '链接无效' };
+    }
+    const raw = url.trim();
+    if (raw.length > 2048) {
+      return { ok: false, error: '链接过长（超过 2048 字符）' };
+    }
+    let parsed;
+    try {
+      parsed = new URL(raw);
+    } catch (_) {
+      return { ok: false, error: '链接格式不正确' };
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { ok: false, error: '仅支持 http/https 链接' };
+    }
+    try {
+      await shell.openExternal(parsed.toString());
+      appendMainLog(`app:openExternal：已在系统浏览器打开 ${parsed.host}`);
+      return { ok: true };
+    } catch (error) {
+      // 系统错误信息可能包含完整 URL：日志与提示统一脱敏为 <链接>，日志仅记录 host。
+      const message = String((error && error.message) || error || '未知错误').slice(0, 200);
+      const safeMessage = message.replace(/https?:\/\/\S+/gi, '<链接>');
+      appendMainLog(`app:openExternal 失败（${parsed.host}）：${safeMessage}`);
+      return { ok: false, error: safeMessage || '系统拒绝打开该链接' };
+    }
   });
 }
 

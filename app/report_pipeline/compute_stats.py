@@ -446,17 +446,38 @@ def compute_stats(
         risk_level, risk_code = "高", "high"
     content_negative_ratio = sentiment["content"]["negative"]["ratio"]
     negative_events_count = sum(1 for x in contents if x["sentiment"] == "negative")
+    comment_negative = sentiment["comments"]["negative"]
+    comment_negative_count = int(comment_negative["count"])
+    comment_negative_ratio = float(comment_negative["ratio"])
+    negative_comments = [x for x in comments if x["sentiment"] == "negative"]
+
+    # 风险等级按「全量样本（内容 + 评论）」负面占比判定；但第四章「重点负面舆情事件」只列负面内容帖。
+    # 两者口径不同时必须在 basis / intro / note 里说明，否则会出现「风险等级高但未识别到负面事件」的自相矛盾。
+    if risk_code == "low":
+        risk_driver = "none"
+    elif content_negative_ratio >= RISK_THRESHOLDS["low"] and comment_negative_ratio >= RISK_THRESHOLDS["low"]:
+        risk_driver = "both"
+    elif content_negative_ratio >= RISK_THRESHOLDS["low"]:
+        risk_driver = "content"
+    elif comment_negative_ratio >= RISK_THRESHOLDS["low"]:
+        risk_driver = "comments"
+    else:
+        risk_driver = "mixed"
     risk = {
         "level": risk_level,
         "level_code": risk_code,
         "negative_ratio": overall_negative_ratio,
         "content_negative_ratio": content_negative_ratio,
+        "comment_negative_ratio": comment_negative_ratio,
         "negative_events": negative_events_count,
+        "negative_comments": comment_negative_count,
+        "risk_driver": risk_driver,
         "thresholds": RISK_THRESHOLDS,
         "basis": (
-            f"负面占比 {overall_negative_ratio:.2%}（阈值：<{RISK_THRESHOLDS['low']:.0%} 为低、"
+            f"负面占比 {overall_negative_ratio:.2%}（其中内容帖 {content_negative_ratio:.2%}、评论 {comment_negative_ratio:.2%}；"
+            f"阈值：<{RISK_THRESHOLDS['low']:.0%} 为低、"
             f"{RISK_THRESHOLDS['low']:.0%}~{RISK_THRESHOLDS['medium']:.0%} 为中、>{RISK_THRESHOLDS['medium']:.0%} 为高）；"
-            f"负面内容 {negative_events_count} 起"
+            f"负面内容 {negative_events_count} 起、负面评论 {comment_negative_count} 条"
         ),
     }
 
@@ -640,6 +661,12 @@ def compute_stats(
     )
 
     # ---- 9) 代表样本（给模型，控制 token）----
+    # 第四章「重点负面舆情事件」只取负面内容帖；评论区负面情绪（尤其无负面内容帖时）需要单独给模型样例，
+    # 否则模型会写出「未识别到负面内容、舆情面平稳」与「风险等级高」自相矛盾的叙述。
+    negative_comment_samples = sorted(
+        negative_comments,
+        key=lambda x: (-(x.get("likes") or 0), x.get("published_at", "")),
+    )[:SAMPLES_TOP_N]
     samples = {
         "negative": [
             {
@@ -652,6 +679,15 @@ def compute_stats(
                 "handling_status": event["handling_status"],
             }
             for event in negative_events[:SAMPLES_TOP_N]
+        ],
+        "negative_comments": [
+            {
+                "platform": item["platform"],
+                "content": (item.get("summary") or item.get("text") or "")[:160],
+                "likes": int(item.get("likes") or 0),
+                "published_date": item.get("published_date", ""),
+            }
+            for item in negative_comment_samples
         ],
         "positive": [
             {

@@ -108,6 +108,74 @@ def _platform_top(stats: Dict[str, Any], limit: int = 5) -> List[Dict[str, Any]]
     return rows
 
 
+def _pct_text(value: Any) -> str:
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return "0.0%"
+    if ratio <= 1.0:
+        ratio *= 100
+    return f"{ratio:.1f}%"
+
+
+def _narrative_comment_facts(stats: Dict[str, Any]) -> Dict[str, Any]:
+    """风险等级与第四章「重点负面事件」口径对齐所需事实（评论负面情况）。"""
+    risk = stats.get("risk") if isinstance(stats.get("risk"), dict) else {}
+    sentiment = stats.get("sentiment") if isinstance(stats.get("sentiment"), dict) else {}
+    comment_block = sentiment.get("comments") if isinstance(sentiment.get("comments"), dict) else {}
+    comment_negative = comment_block.get("negative") if isinstance(comment_block.get("negative"), dict) else {}
+    overall_block = sentiment.get("overall") if isinstance(sentiment.get("overall"), dict) else {}
+    overall_negative = overall_block.get("negative") if isinstance(overall_block.get("negative"), dict) else {}
+    return {
+        "level": str(risk.get("level") or ""),
+        "level_code": str(risk.get("level_code") or ""),
+        "negative_comments": int(risk.get("negative_comments", comment_negative.get("count", 0)) or 0),
+        "comment_negative_ratio": risk.get("comment_negative_ratio", comment_negative.get("ratio", 0.0)),
+        "overall_negative_ratio": risk.get("negative_ratio", overall_negative.get("ratio", 0.0)),
+    }
+
+
+def reconcile_narrative(stats: Dict[str, Any], narrative: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """后处理叙述，修正「风险等级高但第四章未识别到负面事件」的矛盾（客户反馈过）。
+
+    背景：风险等级按「全量（内容 + 评论）」负面占比判定；第四章表格仅列负面内容帖。
+    当本期无负面内容帖、但评论区负面占比高（风险等级为中/高）时，服务端 AI（或本地规则早期版本）
+    容易写出「本期未识别到负面内容，舆情面平稳」，与风险等级相互矛盾。这里统一改为
+    「风险来自评论区」的表述，并补充风险口径说明（不改 HTML 模板/版式）。
+    """
+    if not isinstance(narrative, dict):
+        return {}
+    stats = stats if isinstance(stats, dict) else {}
+    events = stats.get("negative_events") if isinstance(stats.get("negative_events"), list) else []
+    facts = _narrative_comment_facts(stats)
+    if events or facts["level_code"] not in ("medium", "high") or facts["negative_comments"] <= 0:
+        return narrative
+    negative = narrative.get("negative") if isinstance(narrative.get("negative"), dict) else {}
+    negative = dict(negative)
+    intro = (
+        f"本期未识别到负面内容帖；但评论区存在 {facts['negative_comments']} 条负面评论"
+        f"（占评论 {_pct_text(facts['comment_negative_ratio'])}、占全量样本 {_pct_text(facts['overall_negative_ratio'])}），"
+        f"风险等级「{facts['level'] or '—'}」主要由评论区负面情绪驱动，建议重点排查评论区诉求"
+        "（如用工、服务、售后等）并准备回应口径。"
+    )
+    fact_note = (
+        f"本期负面互动集中在评论区：负面内容帖 {len(events)} 起、负面评论 {facts['negative_comments']} 条"
+        f"（占评论 {_pct_text(facts['comment_negative_ratio'])}）；风险等级按全量（内容 + 评论）负面占比判定。"
+    )
+    note = str(negative.get("note") or "").strip()
+    if "评论区" not in note:
+        note = f"{note} {fact_note}".strip() if note else fact_note
+    elif "风险等级" not in note:
+        note = f"{note} {fact_note}".strip()
+    negative["intro"] = intro
+    negative["note"] = note
+    if not isinstance(negative.get("measures"), list):
+        negative["measures"] = []
+    reconciled = dict(narrative)
+    reconciled["negative"] = negative
+    return reconciled
+
+
 def _builtin_html(
     package: Dict[str, Any],
     stats: Dict[str, Any],
@@ -247,6 +315,8 @@ def render_local_report(
             if instruction:
                 narrative_data = dict(narrative_data)
                 narrative_data["revision_instruction"] = instruction
+            # 统一口径：风险等级按全量负面占比、第四章只列负面内容帖——不一致时纠正叙述，避免自相矛盾
+            narrative_data = reconcile_narrative(stats, narrative_data)
             template_path = pipeline_dir / "templates" / "weekly_report.template.html"
             chart_js_path = pipeline_dir / "assets" / "chart.umd.min.js"
             if not template_path.is_file() or not chart_js_path.is_file():
@@ -313,6 +383,7 @@ def render_local_report(
 __all__ = [
     "LOCAL_TEMPLATE_VERSION",
     "LOCAL_NARRATIVE_GENERATED_BY",
+    "reconcile_narrative",
     "render_local_report",
     "resolve_pipeline_dir",
 ]

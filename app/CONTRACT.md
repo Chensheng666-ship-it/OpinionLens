@@ -249,7 +249,9 @@ def preview_run(db_path: str, keywords: list[str], started_ts: int, limit: int =
   `python app/sidecar/main.py --port 0 --token <t> --data-dir <project>/app/data`
 - 读取 stdout 的 `##SIDECAR_READY##{"port":N}`，`GET /health` 通过后创建窗口（1400×900，加载 `renderer/index.html`）。
 - 把 `{baseUrl:"http://127.0.0.1:N", token}` 通过 IPC `app:info` 给 preload。
-- 其他 IPC：`app:openPath`（`shell.openPath`）、`app:showItemInFolder`（`shell.showItemInFolder`）。
+- 其他 IPC：`app:openExternal`（采集动态原文链接 → `shell.openExternal`；校验仅 `http:`/`https:`、长度 ≤2048，
+  返回 `{ok, error?}`，日志只记 host 不落完整 URL）、`app:openPath`（`shell.openPath`）、
+  `app:showItemInFolder`（`shell.showItemInFolder`）。
 - 关闭窗口/退出时杀掉 sidecar 进程树；sidecar 启动失败要在窗口内提示错误（renderer 显示）。
 - 开发辅助参数：`electron . --screenshot <out.png>` → 页面加载完成 2s 后 `webContents.capturePage()` 存 PNG 并退出（供验收/自动化截图使用）；`--no-sidecar` 仅调试 UI。
 - 日志：sidecar stdout 末尾写 `<data-dir>/logs/sidecar.log`。
@@ -259,6 +261,7 @@ def preview_run(db_path: str, keywords: list[str], started_ts: int, limit: int =
 ```js
 contextBridge.exposeInMainWorld('fsapi', {
   getInfo: () => ipcRenderer.invoke('app:info'),            // {baseUrl, token, python, dataDir}
+  openExternal: (url) => ipcRenderer.invoke('app:openExternal', url), // 采集动态原文链接（仅 http/https）
   openPath: (p) => ipcRenderer.invoke('app:openPath', p),
   showItemInFolder: (p) => ipcRenderer.invoke('app:showItemInFolder', p)
 });
@@ -272,9 +275,24 @@ contextBridge.exposeInMainWorld('fsapi', {
      - **need_manual 状态**（滑块/拼图/短信验证码）：弹窗显示醒目提示「已打开登录浏览器窗口，请在该窗口完成验证（短信码输入手机收到的验证码）；完成后 App 自动继续，无需重复扫码」；`kind=sms` 强调短信码，`kind=slider/captcha` 强调滑块/拼图；不得自动关闭弹窗或按失败处理；可取消。
      - 扫码后如手机收到验证码，提示用户回浏览器窗口输入，**不要重复扫码**（避免重复发码）。
   2. **采集任务**：表单（关键词逗号分隔、平台多选、任务名称）→ 开始采集；**采集量固定产品默认值**（`max_notes=15`、`comments=true`、`max_comments=20`，界面不再提供这三个设置，避免用户误配置）；任务列表/当前运行详情：左栏吸顶任务列表 + 任务速览，右侧运行明细为三个 tab（采集动态 `GET /api/runs/{id}/feed` 内容流 / 分平台进度条 + 状态 / 解析后的技术日志，1.5s 轮询；内容区固定高度内滚动）；结束显示「导出 Excel」→ 导出成功后「打开文件」「打开所在文件夹」；停止按钮。
+     - **采集动态（2026-11-13）**：帖子与评论时间显示**完整本地时间** `YYYY-MM-DD HH:mm`（title 提示含秒；跨年数据可区分，不再只显示 `MM-DD HH:mm`）；每条帖子右下角原文链接点击后由主进程 `app:openExternal` 用系统浏览器打开（只允许 http/https，不再复制链接）；「复制摘要」等功能保留。
+  3. **报告中心日期选择（2026-11-13）**：开始/结束日期使用 **Ant Design 风格日历浮层**（纯原生 JS `FS.DatePicker`，无第三方库/CDN；输入框 readonly，点击弹出「年/月切换 + 日期网格 + 今天/清空」，支持键盘操作），不使用浏览器原生 `<input type="date">`。
 - 请求统一带 `Authorization: Bearer <token>`，`fetch(baseUrl + path)`；错误 Toast。
 - 顶部状态栏：sidecar 在线状态、数据目录、版本。
 - UI 文案必须准确：登录方式只有扫码（MVP 先做扫码），手机号/验证码不做；滑块/拼图/短信二次验证统一走「可见浏览器窗口人工接管」。
+- **报告修订语义（2026-11-13 澄清）**：当前架构模型 API（AI）只产出/修订**文字叙述**，HTML 版式/图表/章节由本地
+  `app/report_pipeline` 模板固定渲染，AI **不能修改 HTML 格式**。因此：
+  - `source=local-ai`（模型叙述 + 本地渲染）：按钮为「修订叙述」，弹窗明确「只重写 AI 文字叙述后本地重渲染，HTML 版式不变；
+    版本号 +1」，示例指令只写文字类诉求（语气/详略/建议），不再提示「改成环形图/增加章节」这类 AI 做不到的事；
+  - `source=local-template`（未配置/调用失败、无 AI 叙述）：**隐藏修订入口**，详情提示「本地模板报告没有 AI 文字叙述，无法修订；
+    如需 AI 叙述，请先在「设置 → 模型 API」配置并测试连接后重新生成报告」（后端兼容重渲染能力保留）。
+- **报告风险口径（2026-11-13 修复）**：风险等级按「全量样本（内容帖 + 评论）」负面占比判定（阈值 <8% 低、8%~15% 中、>15% 高），
+  而第四章「重点负面舆情事件」表格只列**负面内容帖**。当本期无负面内容帖、但评论区负面占比高时，报告必须明确说明
+  「风险由评论区负面情绪驱动」，不得出现「风险等级高但未识别到负面内容、舆情面平稳」的矛盾表述：
+  - stats 风险块补充 `comment_negative_ratio / negative_comments / risk_driver`，`basis` 同时给出内容/评论占比与条数；
+  - 概览「风险等级」卡片副标题显示 `重点负面事件 N 起 · 负面评论 M 条`；第四章空表显示评论区负面说明；
+  - 客户端 `local_report.reconcile_narrative()` 会对模型 API 叙述做口径纠偏（无负面内容帖且风险中/高时统一改写第四节导语与说明），
+    本地规则叙述 `narrator._build_negative()` 也已同步；AI 数据包 `samples` 增加 `negative_comments` 高赞负面评论样例供模型参考。
 - 验收：`scripts/dev.ps1` 启动后能看到窗口、能真实发起扫码登录并在弹窗看到二维码。
 
 ---

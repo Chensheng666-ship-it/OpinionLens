@@ -1285,12 +1285,15 @@
     return String(n);
   }
 
+  /** 采集动态帖子/评论时间：完整本地日期时间 YYYY-MM-DD HH:mm（内容可能跨年，不能只显示 MM-DD）。 */
   function feedTimeLabel(value) {
     var d = FS.parseTime(value);
     if (!d) return '';
-    return FS.pad2(d.getMonth() + 1) + '-' + FS.pad2(d.getDate()) + ' ' + FS.pad2(d.getHours()) + ':' + FS.pad2(d.getMinutes());
+    return d.getFullYear() + '-' + FS.pad2(d.getMonth() + 1) + '-' + FS.pad2(d.getDate()) + ' ' +
+      FS.pad2(d.getHours()) + ':' + FS.pad2(d.getMinutes());
   }
 
+  /** 采集动态时间悬浮提示：完整日期时间（含秒），复用 FS.fmtDateTime。 */
   function feedTimeFull(value) {
     var d = FS.parseTime(value);
     return d ? FS.fmtDateTime(value) : '';
@@ -1335,11 +1338,12 @@
       var commentText = String(comment.text || '').trim();
       var commentLikes = Number(comment.likes);
       var commentTime = feedTimeLabel(comment.published_at);
+      var commentTimeFull = feedTimeFull(comment.published_at);
       return '<div class="feed-comment">' +
         '<span class="feed-comment-author" title="' + FS.escape(commentAuthor) + '">' + FS.escape(commentAuthor) + '</span>' +
         '<span class="feed-comment-text" title="' + FS.escape(commentText) + '">' + FS.escape(commentText) + '</span>' +
         (isFinite(commentLikes) && commentLikes > 0 ? '<span class="feed-comment-like" title="评论点赞数">赞 ' + FS.escape(fmtCount(commentLikes)) + '</span>' : '') +
-        (commentTime ? '<span class="feed-comment-time">' + FS.escape(commentTime) + '</span>' : '') +
+        (commentTime ? '<span class="feed-comment-time" title="评论时间 ' + FS.escape(commentTimeFull || commentTime) + '">' + FS.escape(commentTime) + '</span>' : '') +
         '</div>';
     }).join('');
     return '<div class="feed-comments">' + head + rows + '</div>';
@@ -1367,7 +1371,7 @@
     var metricsHtml = feedMetricsHtml(item.metrics);
     var url = String(item.url || '');
     var urlHtml = url
-      ? '<button type="button" class="feed-src" data-act="copy-url" data-url="' + FS.escape(url) + '" title="点击复制原文链接：' + FS.escape(url) + '">' +
+      ? '<button type="button" class="feed-src" data-act="open-url" data-url="' + FS.escape(url) + '" title="点击在系统浏览器打开原文">' +
           FS.icon('external') + '<span>' + FS.escape(url) + '</span></button>'
       : '';
     var foot = (metricsHtml || urlHtml) ? '<div class="feed-item-foot">' + metricsHtml + urlHtml + '</div>' : '';
@@ -1379,6 +1383,31 @@
       '</div>' +
       body + foot + feedCommentsHtml(item) +
       '</article>';
+  }
+
+  /** 采集动态原文链接：交给主进程用系统浏览器打开（renderer 禁止直接弹窗/外部导航，主进程校验 http/https）。 */
+  function openFeedUrl(url) {
+    url = String(url || '').trim();
+    if (!url) {
+      FS.toast({ tone: 'warn', title: '原文链接为空' });
+      return;
+    }
+    if (!window.fsapi || typeof window.fsapi.openExternal !== 'function') {
+      FS.toast({
+        tone: 'warn',
+        title: '当前环境不支持直接打开链接',
+        text: FS.previewMode ? '静态预览模式无法调用系统浏览器，请在安装版应用中操作。' : '请重启应用后重试。'
+      });
+      return;
+    }
+    Promise.resolve().then(function () {
+      return window.fsapi.openExternal(url);
+    }).then(function (res) {
+      if (res && typeof res === 'object' && res.ok === false) throw new Error(res.error || '系统拒绝打开该链接');
+      FS.toast({ tone: 'success', title: '已在浏览器打开原文链接' });
+    }).catch(function (err) {
+      FS.toast({ tone: 'error', title: '无法打开链接', text: FS.errText(err, '系统拒绝打开该链接') });
+    });
   }
 
   function feedLoadingHtml() {
@@ -1920,8 +1949,8 @@
           if (detailBox) detailBox.scrollIntoView({ block: 'start' });
         }
         break;
-      case 'copy-url':
-        if (target.getAttribute('data-url')) FS.copyText(target.getAttribute('data-url'));
+      case 'open-url':
+        openFeedUrl(target.getAttribute('data-url'));
         break;
       default: break;
     }

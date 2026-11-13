@@ -2,6 +2,42 @@
 
 本项目自开源基线 0.1.0 起按版本记录变更。
 
+## 0.2.2 · 2026-11-13（界面体验与报告口径修复）
+
+**界面**
+- **报告中心日期选择器**：开始/结束日期由浏览器原生 `<input type="date">` 改为 **Ant Design 风格日历浮层**
+  （新增 `app/desktop/renderer/datepicker.js`，纯原生 JS、零依赖/零外部请求）：点击日期框弹出日历，支持年/月面板切换、
+  上月/下月、「今天」「清空」、键盘操作（方向键/Enter/Esc/PageUp/PageDown）与视口自动翻转；选择后派发 input/change，
+  现有表单校验（开始不能晚于结束、必填）保持不变；浮层打开时轮询不会重建表单。
+- **采集动态时间显示完整日期**：帖子与评论时间从 `MM-DD HH:mm` 改为 **`YYYY-MM-DD HH:mm`**（本地时区，title 含秒），
+  跨年数据不再混淆。
+- **采集动态原文链接直接打开**：右下角原文链接由「点击复制」改为 **系统默认浏览器打开**（新增主进程
+  `app:openExternal` IPC + preload `openExternal`，仅允许 http/https、长度 ≤2048，日志只记 host 不落完整 URL）；
+  「复制摘要」等其它复制功能保留。
+
+**报告中心修复**
+- **风险等级与「重点负面事件」口径矛盾**：风险等级按全量（内容帖 + 评论）负面占比判定，而第四章只列负面内容帖；
+  当无负面内容帖、评论负面占比高时，旧报告会出现「风险等级高但未识别到负面内容、舆情面平稳」的自相矛盾。
+  - `app/report_pipeline/compute_stats.py`：`risk` 新增 `comment_negative_ratio / negative_comments / risk_driver`，
+    `basis` 同时给出内容/评论占比与条数；`samples` 新增 `negative_comments` 高赞负面评论样例。
+  - `app/report_pipeline/narrator.py`：无负面内容帖但风险中/高、负面评论 > 0 时，第四章导语改为「风险主要由评论区
+    负面情绪驱动」，状态说明补充评论区口径；`render_html.py` 风险卡副标题显示「重点负面事件 N 起 · 负面评论 M 条」，
+    第四章空表显示评论区负面说明；`stats.schema.json` 同步新增字段。
+  - `app/sidecar/local_report.py`：新增 `reconcile_narrative()`，对模型 API 返回的叙述做同一口径纠偏（即使模型写出
+    「舆情面平稳」，本地渲染前也会被纠正）并接入 `render_local_report`；`report_data.py` 数据包 samples 同样增加负面
+    评论样例，供模型生成叙述时参考。
+- **修订语义澄清（AI 只能改文字，不能改 HTML 格式）**：报告详情按来源区分修订入口并更新文案：
+  - `source=local-ai`：按钮「修订叙述」，弹窗标题「修订 AI 叙述（只改文字）」，明确「只重写文字叙述后本地重渲染，
+    HTML 版式/图表/章节不变，版本号 +1」，示例指令只写文字类诉求；
+  - `source=local-template`（无 AI 叙述）：**隐藏修订按钮**，详情提示「本地模板报告没有 AI 文字叙述，无法修订；
+    如需 AI 叙述，请先在「设置 → 模型 API」配置并测试连接后重新生成报告」（后端兼容重渲染能力保留）。
+
+**验证**
+- `node --check` 全部通过；Electron CDP E2E 覆盖：日期选择器（浮层/年月切换/今天/清空/校验联动）、采集动态（完整时间、
+  `open-url`、`fsapi.openExternal` 可用、复制摘要保留）、修订入口三种场景（本地模板隐藏+提示、AI 报告「修订叙述」弹窗）。
+- 报告口径单测：合成「风险高 + 0 条负面内容帖 + 12 条负面评论」数据，`narrator._build_negative` / `reconcile_narrative` /
+  `render_html` 均输出「风险由评论区驱动」文案，无「舆情面平稳」矛盾；开源版离线自测全绿。
+
 ## 0.2.1 · 2026-11-13（品牌视觉更新：深海青主题与全新图标）
 
 **视觉**
