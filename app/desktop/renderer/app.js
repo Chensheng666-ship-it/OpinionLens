@@ -452,6 +452,15 @@
     if (!viewEl) return;
     try { viewEl.focus({ preventScroll: true }); } catch (e) { try { viewEl.focus(); } catch (e2) { /* noop */ } }
   }
+  /* 路由切换入场：重放 #view 的 view-enter 动画（keyframes 在 styles.css，
+     prefers-reduced-motion: reduce 时该动画不声明，元素直接保持最终态）。 */
+  function playViewEnter(viewEl, page) {
+    if (!viewEl) return;
+    try { viewEl.setAttribute('data-page', page || FS.page || ''); } catch (e) { /* noop */ }
+    viewEl.classList.remove('view-enter');
+    void viewEl.offsetWidth;          /* 强制重排，保证同一元素连续切换也能重放动画 */
+    viewEl.classList.add('view-enter');
+  }
   FS.applyPage = function (page) {
     page = page || FS.pageFromHash();
     if (FS.mode === 'boot' || FS.mode === 'connecting') {
@@ -469,18 +478,25 @@
     if (!viewEl) return;
     /* 路由切换复位滚动位置：新页面从标题/tab 开始（P0-4） */
     viewEl.scrollTop = 0;
-    if (FS.mode === 'offline') { renderReadiness(viewEl); focusMain(viewEl); return; }
+    if (FS.mode === 'offline') { renderReadiness(viewEl); focusMain(viewEl); playViewEnter(viewEl, page); return; }
     var view = FS.views[page];
-    if (!view) { viewEl.innerHTML = '<div class="empty"><b>页面不存在</b></div>'; focusMain(viewEl); return; }
+    if (!view) {
+      viewEl.innerHTML = '<div class="empty"><b>页面不存在</b></div>';
+      focusMain(viewEl);
+      playViewEnter(viewEl, page);
+      return;
+    }
     FS.currentView = view;
     viewEl.innerHTML = '';
     try {
       view.render(viewEl);
       focusMain(viewEl);
+      playViewEnter(viewEl, page);
     } catch (e) {
       console.error(e);
       viewEl.innerHTML = '<div class="empty"><div class="empty-ic">' + FS.icon('alert') + '</div><b>页面渲染失败</b><p>' + FS.escape(e.message || String(e)) + '</p></div>';
       focusMain(viewEl);
+      playViewEnter(viewEl, page);
     }
   };
   FS.refreshCurrent = function () {

@@ -12,7 +12,7 @@
 [![CI](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml)
 [![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](app/desktop/package.json)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](app/sidecar/README.md)
-[![Release](https://img.shields.io/badge/release-0.3.0-blue)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.4.0-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 </div>
@@ -65,6 +65,10 @@
 ### 四、工程化能力
 
 - **一键开发启动**：`app/scripts/dev.ps1` 拉起 Electron，Electron 自动托管 Python sidecar；
+- **版本号单一来源 + 一键升版**：`app/desktop/package.json` 是唯一来源（主进程经 `FS_APP_VERSION` 注入 sidecar），
+  `scripts/bump_version.ps1 -Version x.y.z` 一次同步 lock/version.py/README 徽章/CHANGELOG，自测里有「版本号一致性」断言；
+- **应用内更新检查**：主进程代查 GitHub Release（`app/desktop/update.js` 负责版本比较与资产挑选，可离线单测），
+  支持打开发布页或下载安装包后运行，未签名构建同样可用；
 - **Windows 安装包**：electron-builder 生成 NSIS 安装包（per-user 安装、免管理员、内置便携 Python 运行时）；
 - **离线自测**：engine / exporter / report / sidecar / Electron 截图多组断言，跑 `selftest.ps1` 即可回归；
 - **持续集成**：GitHub Actions 在 Windows 上跑 `compileall` + JS 语法检查 + 5 个离线测试套件 + selftest（[CI 状态](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml)）；
@@ -80,6 +84,8 @@
 | 通知提醒 | 采集完成/失败/部分完成、报告生成/失败/降级、账号登录失效、需要人工验证等事件触发通知；支持 **SMTP 邮件、企业微信机器人、Server酱、Bark、通用 Webhook**；outbox 落库、去重、重试退避、静默时段（默认 22:00–08:00）、隐私模式（默认最小化）、发送记录 |
 | 多账号号池 | 同一平台维护多个账号，每个账号独立 Chromium profile（一进程一账号）；账号级扫码登录/检测/启停/默认/软删、健康度/冷却/日配额、选号策略（LRU / 健康度 / 轮询 / 手动）、采集失败自动切号；旧单账号数据自动兼容 |
 | 多 LLM 模型 API | 在应用内配置 **OpenAI 兼容（含 DeepSeek/Ollama/vLLM/中转站）、DeepSeek、Anthropic** 等模型 API，用于 AI 报告叙述；可多套配置、指定默认、测试连接；API Key 使用 Windows DPAPI 加密，界面只显示脱敏值 |
+| 软件更新 | 「设置 → 关于 → 软件更新」里**检查更新**：对比 GitHub Release 的 tag 与本地版本，显示新版本说明，可**打开发布页**或**直接下载安装包（带进度）并运行**；匿名 API 限流时自动退回解析跳转地址 |
+| 数据目录可迁移 | 「设置 → 关于 → 数据存储」里**更改数据目录**：把 SQLite/导出/报告/登录态整体搬到其他盘（旧目录保留），解决「C 盘被采集数据占满」；也可一键恢复默认目录 |
 | 通用设置 | 数据目录、模型、通知、账号池策略集中管理；未配置模型时报告自动回退本地模板 |
 
 > 实现位于 `app/sidecar/`（`notify_service.py`、`notify_channels.py`、`llm_client.py`、`account_manager.py`、
@@ -302,6 +308,7 @@ cd app\desktop; npm run start:no-sidecar
 | [`app/sidecar/README.md`](app/sidecar/README.md) | 本地服务（FastAPI）接口、环境变量、自测 |
 | [`docs/常用命令_构建运行自测.md`](docs/常用命令_构建运行自测.md) | 开发、自测、构建常用命令清单 |
 | [`docs/安装与启动_从零开始.md`](docs/安装与启动_从零开始.md) | 从零安装到「服务在线」的手把手步骤、已知坑与排查 |
+| [`docs/发布与自动更新.md`](docs/发布与自动更新.md) | 版本号怎么升（`bump_version.ps1`）、发版流程、应用内检查更新与数据目录迁移的机制 |
 | [`docs/打包与安装包_构建说明.md`](docs/打包与安装包_构建说明.md) | 安装包产物、构建步骤、验证清单与已知限制 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 版本变更记录 |
 | [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) | 第三方组件与许可证 |
@@ -325,7 +332,13 @@ A：平台风控要求时会自动弹出可见 Edge 窗口，请在窗口中完�
 
 **Q：数据保存在哪里？会不会上传？**
 A：全部保存在本机（源码运行为 `app/data/`，安装版为 `%APPDATA%\OpinionLens\`）。除 AI 报告所需的统计
-数据包与用户主动配置的通知通道外，不上传任何数据。
+数据包与用户主动配置的通知通道外，不上传任何数据。**不想放 C 盘**：设置 → 关于 → 数据存储 →「更改数据目录…」，
+应用会停服务、整目录复制到新位置（旧目录保留）并自动重启，配置记在 `%APPDATA%\OpinionLens\user-config.json`。
+
+**Q：怎么更新到新版本？版本号是怎么定的？**
+A：设置 → 关于 → 软件更新 →「检查更新」，对比的是 GitHub Release 的 tag 与本地 `package.json` 的 version：
+有新版本可就地下载安装包（带进度）或打开发布页手动下载。发布侧用 `scripts/bump_version.ps1 -Version x.y.z`
+一次改全版本号，再打 `v<version>` tag 发 Release；完整流程见 [`docs/发布与自动更新.md`](docs/发布与自动更新.md)。
 
 **Q：支持 macOS / Linux 吗？**
 A：暂不支持。当前仅面向 Windows 10/11（依赖系统 Edge 与 Windows 打包链路）。

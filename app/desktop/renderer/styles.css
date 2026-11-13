@@ -1986,3 +1986,102 @@ code.kv-value { font-family: var(--font-mono); font-size: var(--text-2xs); }
 .date-picker-cell.is-selected:focus-visible,
 .date-picker-opt.is-selected:focus-visible { outline-color: #fff; }
 
+/* ==========================================================================
+   动效层（2026-11-13）：页面切换 / 设置面板切换 / 导航反馈
+   约束：
+   - 只新增选择器，不覆盖既有选中态配色与布局，只补过渡与入场动画；
+   - 动画属性只用 opacity / transform / filter，不碰 height / margin / display，
+     不产生滚动条跳动与 CLS；列表项与卡片一律不做位移；
+   - 全部动效包在 prefers-reduced-motion: no-preference 内：reduce 时动画完全
+     不声明，.view-enter / .panel-enter 元素直接呈现最终态（opacity 1、无位移），
+     布局与静止状态一致；
+   - 时长 160-200ms，缓动 cubic-bezier(.2,.8,.2,1)（无弹跳、无过冲）。
+   ========================================================================== */
+:root {
+  --ease-motion: cubic-bezier(.2, .8, .2, 1);
+  --dur-enter: 200ms;
+  --dur-ui: 160ms;
+}
+
+@keyframes viewEnter {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes panelEnter {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes navIndicatorIn {
+  from { opacity: 0; transform: translateY(-50%) scaleY(.4); }
+  to   { opacity: 1; transform: translateY(-50%) scaleY(1); }
+}
+@keyframes navArrowIn {
+  from { opacity: 0; transform: translateX(-3px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* ---- 路由切换：app.js 在 applyPage 每次渲染后重放 #view 的 view-enter ---- */
+  #view.view-enter { animation: viewEnter var(--dur-enter) var(--ease-motion) both; }
+
+  /* ---- 设置页 tab 面板：根节点 .settings-stack 上的 .panel-enter（settings.js 负责加类） ---- */
+  .panel-enter { animation: panelEnter var(--dur-enter) var(--ease-motion) both; }
+
+  /* ---- 左侧主导航：hover / 选中态过渡，左侧指示条用 transform 缩放淡入 ---- */
+  .nav-item {
+    transition:
+      background var(--dur-ui) var(--ease-motion),
+      color var(--dur-ui) var(--ease-motion),
+      transform var(--dur-ui) var(--ease-motion);
+  }
+  .nav-item .icon { transition: color var(--dur-ui) var(--ease-motion); }
+  .nav-item:active { transform: translateX(1px); }
+  .nav-item.is-active::before {
+    animation: navIndicatorIn var(--dur-enter) var(--ease-motion) both;
+  }
+
+  /* ---- 设置页左侧 tab：背景 / 颜色过渡 + 选中箭头横向淡入 ---- */
+  .settings-nav-item {
+    transition:
+      background var(--dur-ui) var(--ease-motion),
+      color var(--dur-ui) var(--ease-motion);
+  }
+  .settings-nav-ic {
+    transition:
+      background var(--dur-ui) var(--ease-motion),
+      color var(--dur-ui) var(--ease-motion),
+      border-color var(--dur-ui) var(--ease-motion);
+  }
+  .settings-nav-arrow { animation: navArrowIn var(--dur-ui) var(--ease-motion) both; }
+
+  /* ---- 顶栏状态 chip：状态类切换时颜色渐变，不再硬切 ---- */
+  .status-chip {
+    transition:
+      background-color var(--dur-ui) var(--ease-motion),
+      border-color var(--dur-ui) var(--ease-motion),
+      color var(--dur-ui) var(--ease-motion);
+  }
+
+  /* ---- 可点击列表行 / 卡片：只过渡背景与阴影，不做位移，避免布局抖动 ---- */
+  .run-item {
+    transition:
+      background-color var(--dur-ui) var(--ease-motion),
+      box-shadow var(--dur-ui) var(--ease-motion);
+  }
+  .report-history-item {
+    transition:
+      background-color var(--dur-ui) var(--ease-motion),
+      box-shadow var(--dur-ui) var(--ease-motion);
+  }
+
+  /* ---- 按钮：保留 0.5px 下压反馈，改成可过渡的短时 transform ---- */
+  .btn {
+    transition:
+      background var(--dur-ui) var(--ease-motion),
+      border-color var(--dur-ui) var(--ease-motion),
+      color var(--dur-ui) var(--ease-motion),
+      box-shadow var(--dur-ui) var(--ease-motion),
+      transform 120ms var(--ease-motion);
+  }
+}
+

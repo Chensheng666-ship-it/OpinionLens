@@ -336,7 +336,7 @@
       '<div class="ac-meta">' +
         '<div class="ac-meta-row"><span>最近使用</span><b>' + (a.last_used_at ? esc(FS.timeAgo(a.last_used_at)) : '未使用') + '</b></div>' +
         '<div class="ac-meta-row"><span>最近检测</span><b>' + esc(a.last_checked_at ? FS.fmtDateTime(a.last_checked_at) : '—') + '</b></div>' +
-        '<div class="ac-meta-row"><span>今日配额</span><b title="runs ' + esc(limitText) + ' · 条数 ' + esc(itemsLimitText) + '">' +
+        '<div class="ac-meta-row"><span>今日配额</span><b title="今日已发起 ' + esc(limitText) + ' 次采集尝试（未登录直接失败的不计入，自动重试/续采各算一次）· 已入库 ' + esc(itemsLimitText) + ' 条">' +
           esc(limitText) + ' 次 · ' + esc(itemsLimitText) + ' 条</b></div>' +
       '</div>' +
       (quota.day_runs_limit ? '<div class="quota-bar" title="今日 runs 配额使用 ' + quotaPct + '%"><i style="width:' + quotaPct + '%"></i></div>' : '') +

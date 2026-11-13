@@ -15,11 +15,14 @@
 
 'use strict';
 
-const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const https = require('node:https');
+const os = require('node:os');
 const path = require('node:path');
+const { isNewer, pickInstallerAsset } = require('./update');
 
 // -----------------------------------------------------------------------------
 // 路径与常量
@@ -29,10 +32,29 @@ const APP_DIR = path.resolve(DESKTOP_DIR, '..');                // <project>/app
 const PROJECT_DIR = path.resolve(APP_DIR, '..');                // <project>
 const IS_PACKAGED = app.isPackaged;
 const RES_DIR = IS_PACKAGED ? process.resourcesPath : PROJECT_DIR;
-// 打包版数据目录（用户可写、卸载保留）：%APPDATA%\OpinionLens
-const DATA_DIR = IS_PACKAGED
-  ? path.join(process.env.APPDATA || app.getPath('appData'), 'OpinionLens')
-  : path.join(APP_DIR, 'data');
+// 打包版默认数据目录（用户可写、卸载保留）：%APPDATA%\OpinionLens
+// 用户数据目录可在「设置 → 关于 → 数据存储」里改到其他盘；改动的**位置记录**必须放在固定路径，
+// 不能跟着 DATA_DIR 走（否则换个盘就找不到自己的配置了）。
+const BOOTSTRAP_DIR = path.join(process.env.APPDATA || app.getPath('appData'), 'OpinionLens');
+const USER_CONFIG_PATH = path.join(BOOTSTRAP_DIR, 'user-config.json');
+const DEFAULT_DATA_DIR = IS_PACKAGED ? BOOTSTRAP_DIR : path.join(APP_DIR, 'data');
+
+function readUserConfig() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+const USER_CONFIG = readUserConfig();
+const CUSTOM_DATA_DIR = typeof USER_CONFIG.dataDir === 'string' && USER_CONFIG.dataDir.trim()
+  ? path.resolve(USER_CONFIG.dataDir)
+  : '';
+const DATA_DIR = CUSTOM_DATA_DIR || DEFAULT_DATA_DIR;
+// 迁移数据目录时跳过的大目录/机器相关标记（Chromium 缓存、兼容回退标记）
+const DATA_MIGRATE_SKIP = new Set(['electron', 'compat-no-sandbox.flag']);
 const LOG_DIR = path.join(DATA_DIR, 'logs');
 const SIDECAR_LOG = path.join(LOG_DIR, 'sidecar.log');
 const MAIN_LOG = path.join(LOG_DIR, 'main.log');
@@ -835,6 +857,187 @@ async function createMainWindow() {
 }
 
 // -----------------------------------------------------------------------------
+// 版本更新（GitHub Release）—— 主进程代 renderer 联网，renderer 不直连外网
+// 契约 §4.1：app:checkUpdate / app:downloadUpdate / app:runUpdateInstaller
+// -----------------------------------------------------------------------------
+const UPDATE_REPO = process.env.FS_UPDATE_REPO || 'SolitudeZY/OpinionLens';
+const UPDATE_TIMEOUT_MS = 12_000;
+const UPDATE_DOWNLOAD_TIMEOUT_MS = 60_000;
+const ALLOWED_DOWNLOAD_HOSTS = ['github.com', 'objects.githubusercontent.com', 'githubusercontent.com', 'codeload.github.com'];
+
+function userAgent() {
+  return `OpinionLens/${app.getVersion()} (+https://github.com/${UPDATE_REPO})`;
+}
+
+/** GET 一个 JSON 接口（跟随一次 3xx）。 */
+function httpGetJson(url, timeoutMs = UPDATE_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { 'User-Agent': userAgent(), Accept: 'application/vnd.github+json' } }, (res) => {
+      const status = res.statusCode || 0;
+      if (status >= 300 && status < 400 && res.headers.location) {
+        res.resume();
+        httpGetJson(new URL(res.headers.location, url).toString(), timeoutMs).then(resolve, reject);
+        return;
+      }
+      if (status !== 200) {
+        res.resume();
+        reject(new Error(`HTTP ${status}`));
+        return;
+      }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(body)); } catch (_) { reject(new Error('响应不是合法 JSON')); }
+      });
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`请求超时（${timeoutMs}ms）`)));
+    req.on('error', reject);
+  });
+}
+
+/** 兜底：/releases/latest 的 302 Location 里解析 tag（匿名 API 限流时仍能判断有没有新版）。 */
+function httpResolveLatestTag(timeoutMs = UPDATE_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      `https://github.com/${UPDATE_REPO}/releases/latest`,
+      { method: 'HEAD', headers: { 'User-Agent': userAgent() } },
+      (res) => {
+        const location = res.headers.location || '';
+        res.resume();
+        const match = /\/releases\/tag\/([^/?#]+)/.exec(location);
+        if (match) resolve(decodeURIComponent(match[1]));
+        else reject(new Error(`跳转里没有 tag（HTTP ${res.statusCode || 0}）`));
+      }
+    );
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`请求超时（${timeoutMs}ms）`)));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+/**
+ * 查询最新 Release。API 失败（限流/断网）时退回解析跳转地址，至少拿到版本号与发布页。
+ * @returns {Promise<{source:string, tag:string, name:string, notes:string, htmlUrl:string, publishedAt:string, download:object|null, warning?:string}>}
+ */
+async function fetchLatestRelease() {
+  const apiUrl = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
+  try {
+    const release = await httpGetJson(apiUrl);
+    const tag = String(release.tag_name || release.name || '').trim();
+    return {
+      source: 'api',
+      tag,
+      name: String(release.name || tag),
+      notes: String(release.body || '').slice(0, 4000),
+      htmlUrl: String(release.html_url || `https://github.com/${UPDATE_REPO}/releases/tag/${tag}`),
+      publishedAt: String(release.published_at || ''),
+      download: pickInstallerAsset(release.assets, tag),
+    };
+  } catch (error) {
+    const htmlUrl = `https://github.com/${UPDATE_REPO}/releases/latest`;
+    try {
+      const tag = await httpResolveLatestTag();
+      return {
+        source: 'redirect',
+        tag,
+        name: tag,
+        notes: '',
+        htmlUrl,
+        publishedAt: '',
+        download: null,
+        warning: `GitHub API 不可用（${error.message}），已按跳转地址解析版本；只能引导到发布页下载`,
+      };
+    } catch (fallbackError) {
+      throw new Error(`检查更新失败：${error.message}；兜底也失败：${fallbackError.message}`);
+    }
+  }
+}
+
+/** 流式下载到本地文件，返回 {path,size}。进度通过 onProgress(received,total) 回报。 */
+function downloadToFile(url, destPath, onProgress, timeoutMs = UPDATE_DOWNLOAD_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { 'User-Agent': userAgent() } }, (res) => {
+      const status = res.statusCode || 0;
+      if (status >= 300 && status < 400 && res.headers.location) {
+        res.resume();
+        downloadToFile(new URL(res.headers.location, url).toString(), destPath, onProgress, timeoutMs).then(resolve, reject);
+        return;
+      }
+      if (status !== 200) {
+        res.resume();
+        reject(new Error(`HTTP ${status}`));
+        return;
+      }
+      const total = Number(res.headers['content-length'] || 0);
+      let received = 0;
+      const out = fs.createWriteStream(destPath);
+      res.on('data', (chunk) => {
+        received += chunk.length;
+        try { onProgress(received, total); } catch (_) { /* 进度回调失败不影响下载 */ }
+      });
+      res.on('error', reject);
+      out.on('error', reject);
+      out.on('finish', () => out.close(() => resolve({ path: destPath, size: received, total })));
+      res.pipe(out);
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error(`下载超时（${timeoutMs}ms）`)));
+    req.on('error', reject);
+  });
+}
+
+function isAllowedDownloadUrl(raw) {
+  try {
+    const parsed = new URL(String(raw || ''));
+    if (parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    return ALLOWED_DOWNLOAD_HOSTS.some((item) => host === item || host.endsWith('.' + item));
+  } catch (_) {
+    return false;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// 数据目录迁移（用户把数据从 C 盘挪到其他盘）
+// -----------------------------------------------------------------------------
+async function copyDataTree(src, dst, skipNames, onEntry) {
+  await fs.promises.mkdir(dst, { recursive: true });
+  const entries = await fs.promises.readdir(src, { withFileTypes: true });
+  let done = 0;
+  for (const entry of entries) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dst, entry.name);
+    if (!skipNames.has(entry.name)) {
+      if (entry.isDirectory()) {
+        await fs.promises.cp(from, to, { recursive: true, force: true });
+      } else if (entry.isFile()) {
+        await fs.promises.copyFile(from, to);
+      }
+    }
+    done += 1;
+    try { onEntry(done, entries.length, entry.name); } catch (_) { /* 进度回调失败忽略 */ }
+  }
+}
+
+function writeUserConfig(patch) {
+  const next = { ...readUserConfig(), ...patch };
+  fs.mkdirSync(path.dirname(USER_CONFIG_PATH), { recursive: true });
+  fs.writeFileSync(USER_CONFIG_PATH, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  return next;
+}
+
+function relaunchApp() {
+  const args = process.argv.slice(1).filter((arg) => arg !== '--no-sandbox');
+  if (process.argv.includes('--no-sandbox')) args.push('--no-sandbox');
+  try {
+    app.relaunch({ args });
+  } catch (error) {
+    appendMainLog(`app.relaunch 失败：${error.message}`);
+  }
+  setTimeout(() => app.exit(0), 300);
+}
+
+// -----------------------------------------------------------------------------
 // IPC（对齐 CONTRACT §4.1/4.2）
 // -----------------------------------------------------------------------------
 function registerIpc() {
@@ -843,8 +1046,14 @@ function registerIpc() {
     token: STATE.token,
     python: MC_PYTHON,
     dataDir: DATA_DIR,
+    dataDirDefault: DEFAULT_DATA_DIR,
+    dataDirCustom: !!CUSTOM_DATA_DIR,
+    userConfigPath: USER_CONFIG_PATH,
     appVersion: app.getVersion(),
     electronVersion: process.versions.electron,
+    platform: process.platform,
+    arch: process.arch,
+    updateRepo: UPDATE_REPO,
     sidecar: {
       ok: STATE.sidecar.ok,
       skipped: STATE.sidecar.skipped,
@@ -901,6 +1110,175 @@ function registerIpc() {
       const safeMessage = message.replace(/https?:\/\/\S+/gi, '<链接>');
       appendMainLog(`app:openExternal 失败（${parsed.host}）：${safeMessage}`);
       return { ok: false, error: safeMessage || '系统拒绝打开该链接' };
+    }
+  });
+
+  // ---- 版本更新 ------------------------------------------------------------
+  ipcMain.handle('app:checkUpdate', async () => {
+    const current = app.getVersion();
+    try {
+      const release = await fetchLatestRelease();
+      const hasUpdate = isNewer(current, release.tag);
+      appendMainLog(`检查更新：当前 v${current} / 最新 ${release.tag}（hasUpdate=${hasUpdate}, source=${release.source}）`);
+      return {
+        ok: true,
+        current,
+        latest: release.tag.replace(/^[vV]+/, ''),
+        hasUpdate,
+        releaseUrl: release.htmlUrl,
+        releaseName: release.name,
+        notes: release.notes,
+        publishedAt: release.publishedAt,
+        download: release.download,
+        source: release.source,
+        warning: release.warning || '',
+      };
+    } catch (error) {
+      appendMainLog(`检查更新失败：${error.message}`);
+      return { ok: false, current, error: '检查更新失败：' + String(error.message || error) };
+    }
+  });
+
+  ipcMain.handle('app:downloadUpdate', async (event, payload) => {
+    const url = payload && typeof payload.url === 'string' ? payload.url.trim() : '';
+    const rawName = payload && typeof payload.name === 'string' ? payload.name.trim() : '';
+    if (!url || !isAllowedDownloadUrl(url)) {
+      return { ok: false, error: '下载地址无效（仅支持 GitHub https 地址）' };
+    }
+    const safeName = (rawName || 'OpinionLens-Setup.exe').replace(/[\\/:*?"<>|]/g, '_').slice(-120);
+    const destPath = path.join(os.tmpdir(), 'OpinionLens-update', safeName);
+    try {
+      fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    } catch (error) {
+      return { ok: false, error: `创建临时目录失败：${error.message}` };
+    }
+    const sender = event.sender;
+    let lastSent = 0;
+    try {
+      const result = await downloadToFile(url, destPath, (received, total) => {
+        const now = Date.now();
+        if (now - lastSent < 200 && received !== total) return;
+        lastSent = now;
+        try {
+          sender.send('app:updateProgress', {
+            received,
+            total,
+            percent: total > 0 ? Math.min(100, Math.round((received / total) * 100)) : null,
+          });
+        } catch (_) { /* 窗口已关闭 */ }
+      });
+      // 基础校验：Windows 安装包必须是 PE（MZ 头），防止把错误页保存成 exe
+      const head = Buffer.alloc(2);
+      const fd = fs.openSync(destPath, 'r');
+      try { fs.readSync(fd, head, 0, 2, 0); } finally { fs.closeSync(fd); }
+      if (head.toString('latin1') !== 'MZ') {
+        fs.rmSync(destPath, { force: true });
+        return { ok: false, error: '下载内容不是有效的 Windows 安装包（可能被网络代理拦截）' };
+      }
+      appendMainLog(`更新包下载完成：${destPath}（${(result.size / 1048576).toFixed(1)} MB）`);
+      return { ok: true, path: destPath, size: result.size };
+    } catch (error) {
+      appendMainLog(`更新包下载失败：${error.message}`);
+      try { fs.rmSync(destPath, { force: true }); } catch (_) { /* ignore */ }
+      return { ok: false, error: `下载失败：${String(error.message || error)}` };
+    }
+  });
+
+  ipcMain.handle('app:runUpdateInstaller', async (_event, filePath) => {
+    if (typeof filePath !== 'string' || !filePath.trim()) {
+      return { ok: false, error: '安装包路径无效' };
+    }
+    const abs = path.resolve(filePath);
+    const tmpRoot = path.resolve(os.tmpdir(), 'OpinionLens-update');
+    if (!abs.toLowerCase().startsWith(tmpRoot.toLowerCase() + path.sep)) {
+      return { ok: false, error: '只允许运行本应用下载到临时目录的安装包' };
+    }
+    if (!fs.existsSync(abs)) return { ok: false, error: '安装包不存在，请重新下载' };
+    const error = await shell.openPath(abs);
+    if (error) return { ok: false, error };
+    appendMainLog(`已启动更新安装包：${path.basename(abs)}`);
+    return { ok: true };
+  });
+
+  // ---- 数据目录 ------------------------------------------------------------
+  ipcMain.handle('app:chooseDataDir', async () => {
+    const options = {
+      title: '选择数据保存目录',
+      defaultPath: DATA_DIR,
+      buttonLabel: '使用此目录',
+      properties: ['openDirectory', 'createDirectory'],
+    };
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+      return { ok: false, canceled: true };
+    }
+    return { ok: true, path: result.filePaths[0] };
+  });
+
+  ipcMain.handle('app:migrateDataDir', async (event, targetRaw) => {
+    const targetText = typeof targetRaw === 'string' ? targetRaw.trim() : '';
+    if (!targetText) return { ok: false, error: '目标目录无效' };
+    const target = path.resolve(targetText);
+    const source = path.resolve(DATA_DIR);
+    const lowerTarget = target.toLowerCase();
+    const lowerSource = source.toLowerCase();
+    if (!path.isAbsolute(targetText)) return { ok: false, error: '请选择绝对路径' };
+    if (lowerTarget === lowerSource) return { ok: false, error: '目标目录与当前数据目录相同' };
+    if (lowerTarget.startsWith(lowerSource + path.sep)) return { ok: false, error: '目标目录不能位于当前数据目录内部' };
+    if (lowerSource.startsWith(lowerTarget + path.sep)) return { ok: false, error: '目标目录不能是当前数据目录的上级目录' };
+    if (fs.existsSync(path.join(target, 'app.db'))) {
+      return { ok: false, code: 'DATA_TARGET_OCCUPIED', error: '目标目录已存在 OpinionLens 数据（app.db），请另选空目录' };
+    }
+    try {
+      fs.mkdirSync(target, { recursive: true });
+      const probe = path.join(target, '.ol-write-probe');
+      fs.writeFileSync(probe, 'ok', 'utf8');
+      fs.rmSync(probe, { force: true });
+    } catch (error) {
+      return { ok: false, code: 'DATA_TARGET_NOT_WRITABLE', error: `目标目录不可写：${error.message}` };
+    }
+
+    const sender = event.sender;
+    const progress = (step, label, extra) => {
+      try { sender.send('app:dataDirProgress', { step, label, ...(extra || {}) }); } catch (_) { /* 窗口已关闭 */ }
+    };
+    const wasRunning = !!(sidecarChild && !sidecarKilled);
+    progress('stopping', '停止本地服务…');
+    killSidecarProcessTree();
+    try {
+      progress('copying', '复制数据…', { percent: 0 });
+      await copyDataTree(source, target, DATA_MIGRATE_SKIP, (done, total, name) => {
+        progress('copying', `复制 ${name}（${done}/${total}）`, { percent: Math.round((done / Math.max(1, total)) * 100) });
+      });
+      progress('config', '写入配置…');
+      writeUserConfig({ dataDir: target, dataDirUpdatedAt: new Date().toISOString() });
+      appendMainLog(`数据目录已迁移：${source} → ${target}（旧目录保留，可手动清理）`);
+      progress('restarting', '重启应用…');
+      relaunchApp();
+      return { ok: true, source, target, oldDirKept: true, needRestart: true };
+    } catch (error) {
+      appendMainLog(`数据目录迁移失败：${error.message}`);
+      if (wasRunning) {
+        startSidecar().catch((restartError) => appendMainLog(`迁移失败后重启 sidecar 失败：${restartError.message}`));
+      }
+      return { ok: false, code: 'DATA_MIGRATE_FAILED', error: `迁移失败：${error.message}` };
+    }
+  });
+
+  ipcMain.handle('app:resetDataDir', async () => {
+    try {
+      const current = readUserConfig();
+      delete current.dataDir;
+      delete current.dataDirUpdatedAt;
+      fs.mkdirSync(path.dirname(USER_CONFIG_PATH), { recursive: true });
+      fs.writeFileSync(USER_CONFIG_PATH, `${JSON.stringify(current, null, 2)}\n`, 'utf8');
+      appendMainLog(`数据目录已恢复默认：${DEFAULT_DATA_DIR}`);
+      relaunchApp();
+      return { ok: true, target: DEFAULT_DATA_DIR, needRestart: true };
+    } catch (error) {
+      return { ok: false, error: `恢复默认目录失败：${error.message}` };
     }
   });
 }

@@ -78,10 +78,18 @@
       settings: { default_strategy: 'lru', platform_min_interval_s: 30, limits: { daily_runs: 20, daily_saved_items: 2000 } },
       adopting: {}
     },
+    update: {
+      checking: false, result: null, error: '', downloading: false, progress: null,
+      downloadedPath: '', downloadedSize: 0, checkedAt: '', dismissed: false
+    },
+    datadir: { migrating: false, progress: null, error: '', picking: false },
     lastLoadedAt: null
   };
   var viewEl = null;
   var openModals = [];
+  /** 主进程进度推送的取消订阅函数（页面销毁时统一调用） */
+  var unsubUpdateProgress = null;
+  var unsubDataDirProgress = null;
 
   function initialTab() {
     var q = queryParam('settingsTab') || queryParam('tab');
@@ -226,12 +234,22 @@
         '<nav class="settings-nav" role="tablist" aria-orientation="vertical" aria-label="设置分类">' + navItemsHtml() + '</nav>' +
         '<div class="settings-main" id="settings-main">' + panelHtml(state.tab) + '</div>' +
       '</div>';
+    applyPanelEnter(viewEl.querySelector('#settings-main'));
     ensureLoaded(state.tab, false);
+  }
+  /** tab 切换 / 首次渲染的入场动画钩子：类名在面板根节点上，动画由 styles.css 的 .panel-enter 提供 */
+  var panelEnterPending = true;
+  function applyPanelEnter(box) {
+    if (!box || !panelEnterPending) return;
+    panelEnterPending = false;
+    var panel = box.firstElementChild;
+    if (panel && panel.classList) panel.classList.add('panel-enter');
   }
   function renderPanel() {
     var box = viewEl && viewEl.querySelector('#settings-main');
     if (!box) { if (viewEl) render(); return; }
     box.innerHTML = panelHtml(state.tab);
+    applyPanelEnter(box);
   }
   function renderPanelIfActive(tab) {
     if (state.tab === tab && FS.currentView === FS.views.settings) renderPanel();
@@ -239,6 +257,7 @@
   function switchTab(tab) {
     if (!tab || tab === state.tab) return;
     state.tab = tab;
+    panelEnterPending = true;
     render();
   }
 
@@ -752,6 +771,7 @@
     var adoptBtn;
     if (legacy.length) {
       adoptBtn = '<button class="btn btn-sm btn-ghost" data-settings-act="adopt-account" data-id="' + esc(legacy[0].account_id) + '" data-platform="' + esc(platform.id) + '"' +
+        ' title="把旧版共用目录中的登录态搬到该账号自己的独立目录（幂等，可重复点；迁移前请先停止采集/登录）"' +
         (adopting ? ' disabled' : '') + '>' + (adopting ? '<span class="spinner"></span>迁移中…' : FS.icon('folder') + '迁移旧目录') + '</button>';
     } else {
       adoptBtn = '<button class="btn btn-sm btn-ghost" disabled title="该平台没有旧版登录目录">' + FS.icon('folder') + '迁移旧目录</button>';
@@ -807,7 +827,7 @@
     body += '<section class="card">' +
       '<div class="card-head"><div class="card-title">' + FS.icon('browser') + '旧版登录目录迁移<span class="sub">一进程一账号 · 旧 profile 兼容</span></div></div>' +
       '<div class="card-body">' +
-        '<p class="field-hint legacy-hint">旧版本每个平台只有一个 <code>browser_data/&lt;platform&gt;_user_data_dir</code> 目录。迁移会在账号空闲时把旧目录搬到该账号的新 profile 路径（幂等），遇到 Edge 占用会提示稍后重试；迁移前请先停止采集与登录。</p>' +
+        '<p class="field-hint legacy-hint"><b>「迁移旧目录」是什么：</b>0.3 之前的版本每个平台只有一个共用浏览器目录 <code>browser_data/&lt;platform&gt;_user_data_dir</code>，同一个平台只能存一个账号的登录态；新版本每个账号有自己的独立目录，多账号不会互相覆盖 Cookie。点这个按钮 = 把旧目录里的登录态搬到<strong>该账号</strong>的新目录下（空闲时执行、幂等可重复点、目标已存在会被拒绝），迁移前请先停止采集与登录。不迁移也能照常采集，只是该账号继续沿用旧布局、无法在同一平台挂第二个账号。</p>' +
         '<div class="legacy-list">' + FS.PLATFORMS.map(platformLegacyRowHtml).join('') + '</div>' +
       '</div>' +
     '</section>';
@@ -854,6 +874,8 @@
         '<button class="btn btn-quiet" data-settings-act="copy-diag">' + FS.icon('info') + '复制诊断信息</button>' +
       '</div></div>' +
     '</section>';
+    body += dataStoreCardHtml();
+    body += updateCardHtml();
     body += '<section class="card">' +
       '<div class="card-head"><div class="card-title">' + FS.icon('shield') + '开源协议与免责声明</div>' +
         '<span class="chip chip-muted">MIT</span></div>' +
@@ -871,6 +893,170 @@
       '</div>' +
     '</section>';
     return '<div class="settings-stack">' + body + '</div>';
+  }
+
+  /* ---------- 关于：数据存储 / 软件更新（卡片渲染，只读 state） ---------- */
+  /** preload 是否暴露了某个 fsapi 方法：静态预览 / 浏览器直开时全部为 false */
+  function hasApi(name) {
+    return !!(window.fsapi && typeof window.fsapi[name] === 'function');
+  }
+  function fmtMB(bytes) {
+    var n = numOr(bytes, 0);
+    return n > 0 ? (n / 1048576).toFixed(1) + ' MB' : '0.0 MB';
+  }
+  function progressBarHtml(percent, text) {
+    var pct = (percent === null || percent === undefined) ? null : Math.max(0, Math.min(100, numOr(percent, 0)));
+    return '<div class="progress-wrap" style="display:flex;flex-direction:column;gap:6px;margin-top:12px">' +
+      '<div class="progress"><div class="progress-bar' + (pct === null ? ' is-striped' : '') + '" style="width:' + (pct === null ? 100 : pct) + '%"></div></div>' +
+      '<div class="field-hint">' + esc(strOr(text, '')) + (pct === null ? '' : ' · ' + pct + '%') + '</div>' +
+    '</div>';
+  }
+  function updateSourceLabel(source) {
+    if (source === 'api') return 'GitHub API';
+    if (source === 'redirect') return '跳转兜底';
+    return '—';
+  }
+  function updateResultText(u) {
+    if (u.checking) return '检查中…';
+    if (u.error && !u.result) return '检查失败';
+    if (!u.result) return '未检查';
+    if (u.result.hasUpdate === true) return '发现新版本 v' + strOr(u.result.latest, '—');
+    return '已是最新（v' + strOr(u.result.latest, '—') + '）';
+  }
+  function updateStateChip(u) {
+    if (u.downloading) return '<span class="chip chip-warn"><span class="spinner"></span>下载中</span>';
+    if (u.checking) return '<span class="chip chip-warn"><span class="spinner"></span>检查中</span>';
+    if (u.error) return u.result ? chip('更新失败', 'neg', 'alert') : chip('检查失败', 'neg', 'alert');
+    if (!u.result) return chip('未检查', 'muted');
+    if (u.result.hasUpdate === true) return chip('有新版本', 'accent', 'download');
+    return chip('已是最新', 'pos', 'check');
+  }
+  function dataStoreCardHtml() {
+    var d = state.datadir;
+    var info = FS.info || {};
+    var dataDir = FS.dataDir() || '';
+    var defaultDir = strOr(info.dataDirDefault, '');
+    var custom = info.dataDirCustom === true;
+    var configPath = strOr(info.userConfigPath, '');
+    var canChoose = hasApi('chooseDataDir') && hasApi('migrateDataDir');
+    var canReset = hasApi('resetDataDir');
+    var busy = d.migrating || d.picking;
+    var body = '<div class="about-grid">' +
+      aboutRowHtml('当前数据目录', dataDir || '—', true) +
+      aboutRowHtml('目录类型', custom ? '自定义（已迁移）' : '默认目录') +
+      aboutRowHtml('默认目录', defaultDir || '—', true) +
+      aboutRowHtml('配置文件', configPath || '—', true) +
+    '</div>' +
+    '<p class="field-hint" style="margin-top:10px">登录态、SQLite 数据库、导出的 Excel 与报告都在数据目录内；自定义目录记录在配置文件里，修改后需要重启应用。</p>';
+    if (!canChoose && !canReset) {
+      body += '<p class="field-hint">桌面端可用（静态预览 / 浏览器直开时不支持更改数据目录）。</p>';
+    }
+    if (d.error) {
+      body += '<div style="margin-top:10px">' + bannerHtml('neg', 'alert', '数据目录操作失败', esc(d.error)) + '</div>';
+    }
+    if (d.migrating) {
+      body += progressBarHtml(d.progress ? d.progress.percent : null, d.progress ? d.progress.label : '准备迁移…');
+    }
+    body += '<div class="settings-actions actions-left">' +
+      '<button class="btn btn-ghost" data-settings-act="open-data-dir"' + (d.migrating ? ' disabled' : '') + '>' + FS.icon('folder') + '打开目录</button>' +
+      '<button class="btn btn-ghost" data-settings-act="choose-data-dir"' + (busy || !canChoose ? ' disabled' : '') + '>' +
+        (d.picking ? '<span class="spinner"></span>选择中…' : FS.icon('folder') + '更改数据目录…') + '</button>' +
+      (custom
+        ? '<button class="btn btn-quiet" data-settings-act="reset-data-dir"' + (busy || !canReset ? ' disabled' : '') + '>' + FS.icon('history') + '恢复默认目录</button>'
+        : '') +
+    '</div>';
+    return '<section class="card">' +
+      '<div class="card-head"><div class="card-title">' + FS.icon('folder') + '数据存储' +
+        '<span class="sub">数据目录 / 迁移</span></div>' +
+        '<div class="card-tools">' +
+          (d.migrating ? '<span class="chip chip-warn"><span class="spinner"></span>迁移中</span>' : '') +
+          (custom ? chip('自定义目录', 'accent', 'folder') : chip('默认目录', 'muted', 'folder')) +
+        '</div>' +
+      '</div>' +
+      '<div class="card-body">' + body + '</div>' +
+    '</section>';
+  }
+  function updateCardHtml() {
+    var u = state.update;
+    var info = FS.info || {};
+    var busy = u.checking || u.downloading || state.datadir.migrating;
+    var apiReady = hasApi('checkUpdate');
+    var body = '<div class="about-grid">' +
+      aboutRowHtml('当前版本', 'v' + FS.versionLabel(), true) +
+      aboutRowHtml('上次检查', u.checkedAt ? FS.fmtDateTime(u.checkedAt) : '—', true) +
+      aboutRowHtml('检查结果', updateResultText(u)) +
+      aboutRowHtml('发布来源', 'GitHub Release' + (info.updateRepo ? ' · ' + info.updateRepo : '')) +
+    '</div>';
+    if (!apiReady) {
+      body += '<p class="field-hint" style="margin-top:10px">桌面端可用（静态预览 / 浏览器直开时不支持检查更新与下载安装包）。</p>';
+    }
+    if (u.error && apiReady) {
+      body += '<div style="margin-top:12px">' + bannerHtml('neg', 'alert', u.result ? '更新操作失败' : '检查更新失败', esc(u.error),
+        '<button class="btn btn-sm btn-ghost" data-settings-act="check-update"' + (busy ? ' disabled' : '') + '>' + FS.icon('refresh') + '重试</button>') + '</div>';
+    }
+    var r = u.result;
+    if (r && r.hasUpdate === false) {
+      body += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px">' +
+        chip('已是最新版本 v' + strOr(r.latest, FS.versionLabel()), 'pos', 'check') +
+        '<span class="field-hint">最新 tag v' + esc(strOr(r.latest, '—')) + ' · 检查来源：' + esc(updateSourceLabel(r.source)) + '</span>' +
+      '</div>';
+    }
+    if (r && r.hasUpdate === true) {
+      body += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px">' +
+        chip('发现新版本 v' + strOr(r.latest, '—'), 'accent', 'download') +
+        '<span class="field-hint">当前 v' + esc(strOr(r.current, FS.versionLabel())) + ' → 最新 v' + esc(strOr(r.latest, '—')) +
+          (r.publishedAt ? ' · 发布于 ' + esc(FS.fmtDateTime(r.publishedAt)) : '') +
+          ' · 来源：' + esc(updateSourceLabel(r.source)) + '</span>' +
+      '</div>';
+      if (!u.dismissed && r.notes) {
+        body += '<pre class="update-notes" style="margin:10px 0 0;max-height:170px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;font-size:12px;line-height:1.65;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--line-soft);border-radius:var(--r-md);padding:10px 12px">' +
+          esc(String(r.notes).slice(0, 8000)) + '</pre>';
+      }
+      var dl = r.download || null;
+      var btns = '';
+      if (r.releaseUrl) {
+        btns += '<button class="btn btn-primary" data-settings-act="open-release"' + (busy ? ' disabled' : '') + '>' + FS.icon('external') + '打开发布页</button>';
+      }
+      if (dl && dl.url && !u.dismissed) {
+        btns += '<button class="btn btn-ghost" data-settings-act="download-update"' + (busy ? ' disabled' : '') + '>' +
+          FS.icon('download') + (u.downloading ? '下载中…' : '下载并安装…') + '</button>';
+      }
+      if (!u.dismissed) {
+        btns += '<button class="btn btn-quiet" data-settings-act="dismiss-update">暂不更新</button>';
+      }
+      body += '<div class="settings-actions actions-left">' + btns + '</div>';
+      if (dl && dl.size) {
+        body += '<p class="field-hint" style="margin-top:8px">安装包：' + esc(strOr(dl.name, 'OpinionLens-Setup.exe')) + ' · ' + fmtMB(dl.size) + '</p>';
+      }
+    }
+    if (u.downloading) {
+      var p = u.progress;
+      body += progressBarHtml(p ? p.percent : null, p
+        ? '已下载 ' + fmtMB(p.received) + (p.total ? ' / ' + fmtMB(p.total) : '')
+        : '准备下载…');
+    }
+    if (u.downloadedPath) {
+      body += '<div class="settings-actions actions-left">' +
+        chip('已下载（' + fmtMB(u.downloadedSize) + '）', 'pos', 'check') +
+        '<button class="btn btn-primary" data-settings-act="run-installer"' + (busy ? ' disabled' : '') + '>' + FS.icon('play') + '运行安装包</button>' +
+      '</div>';
+    }
+    if (r && r.warning) {
+      body += '<p class="field-hint" style="margin-top:10px">' + esc(r.warning) + '</p>';
+    }
+    if (r && u.dismissed) {
+      body += '<p class="field-hint" style="margin-top:10px">已收起本次更新提示；需要查看时点「检查更新」。</p>';
+    }
+    return '<section class="card">' +
+      '<div class="card-head"><div class="card-title">' + FS.icon('download') + '软件更新' +
+        '<span class="sub">GitHub Release · 安装版可用</span></div>' +
+        '<div class="card-tools">' + updateStateChip(u) +
+          '<button class="btn btn-sm btn-ghost" data-settings-act="check-update"' + (busy || !apiReady ? ' disabled' : '') + '>' +
+            FS.icon('refresh') + (u.checking ? '检查中…' : '检查更新') + '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="card-body">' + body + '</div>' +
+    '</section>';
   }
 
   /* ------------------------------------------------------------ 交互：模型 API */
@@ -1411,6 +1597,262 @@
     ];
     FS.copyText(lines.join('\n'));
   }
+  function previewApiToast(title) {
+    FS.toast({
+      tone: 'warn',
+      title: title || '桌面端可用',
+      text: FS.previewMode
+        ? '静态预览 / 浏览器直开时无法调用桌面端能力，请在安装版应用中操作。'
+        : '请重启应用后重试。'
+    });
+  }
+
+  /* ---------- 关于：软件更新动作 ---------- */
+  function startUpdateProgress() {
+    if (unsubUpdateProgress || !hasApi('onUpdateProgress')) return;
+    try {
+      var off = window.fsapi.onUpdateProgress(function (p) {
+        if (!p) return;
+        var percent = (p.percent === null || p.percent === undefined) ? null : numOr(p.percent, 0);
+        state.update.progress = { received: numOr(p.received, 0), total: numOr(p.total, 0), percent: percent };
+        renderPanelIfActive('about');
+      });
+      unsubUpdateProgress = typeof off === 'function' ? off : null;
+    } catch (e) {
+      unsubUpdateProgress = null;
+    }
+  }
+  function stopUpdateProgress() {
+    if (!unsubUpdateProgress) return;
+    try { unsubUpdateProgress(); } catch (e) { /* 订阅已失效 */ }
+    unsubUpdateProgress = null;
+  }
+  function checkForUpdate() {
+    var st = state.update;
+    if (st.checking) return;
+    if (!hasApi('checkUpdate')) { previewApiToast('当前环境不支持检查更新'); return; }
+    st.checking = true;
+    st.error = '';
+    st.dismissed = false;
+    renderPanelIfActive('about');
+    window.fsapi.checkUpdate().then(function (res) {
+      var out = res || {};
+      if (out.ok === false) {
+        st.result = null;
+        st.error = strOr(out.error, '检查更新失败');
+        return;
+      }
+      st.result = out;
+      st.checkedAt = new Date().toISOString();
+      st.downloadedPath = '';
+      st.downloadedSize = 0;
+      st.progress = null;
+      if (out.hasUpdate === true) {
+        FS.toast({ tone: 'info', title: '发现新版本 v' + strOr(out.latest, ''), text: '可在「软件更新」卡片中下载安装包。', duration: 5200 });
+      } else {
+        FS.toast({ tone: 'success', title: '已是最新版本 v' + strOr(out.latest, FS.versionLabel()) });
+      }
+    }).catch(function (err) {
+      st.result = null;
+      st.error = FS.errText(err, '检查更新失败');
+    }).finally(function () {
+      st.checking = false;
+      renderPanelIfActive('about');
+    });
+  }
+  function downloadUpdatePackage() {
+    var st = state.update;
+    var r = st.result;
+    var dl = r && r.download ? r.download : null;
+    if (!dl || !dl.url) {
+      FS.toast({ tone: 'warn', title: '没有可下载的安装包', text: '请到发布页手动下载。' });
+      return;
+    }
+    if (st.downloading) return;
+    if (!hasApi('downloadUpdate')) { previewApiToast('当前环境不支持下载安装包'); return; }
+    st.downloading = true;
+    st.error = '';
+    st.downloadedPath = '';
+    st.downloadedSize = 0;
+    st.progress = { received: 0, total: numOr(dl.size, 0), percent: 0 };
+    startUpdateProgress();
+    renderPanelIfActive('about');
+    window.fsapi.downloadUpdate({ url: dl.url, name: strOr(dl.name, '') }).then(function (res) {
+      var out = res || {};
+      if (out.ok === false) {
+        st.error = strOr(out.error, '下载安装包失败');
+        FS.toast({ tone: 'error', title: '下载安装包失败', text: st.error });
+        return;
+      }
+      st.downloadedPath = strOr(out.path, '');
+      st.downloadedSize = numOr(out.size, numOr(dl.size, 0));
+      FS.toast({ tone: 'success', title: '安装包已下载', text: fmtMB(st.downloadedSize) + '，可点「运行安装包」继续。' });
+    }).catch(function (err) {
+      st.error = FS.errText(err, '下载安装包失败');
+      FS.toast({ tone: 'error', title: '下载安装包失败', text: st.error });
+    }).finally(function () {
+      st.downloading = false;
+      st.progress = null;
+      stopUpdateProgress();
+      renderPanelIfActive('about');
+    });
+  }
+  function runInstaller() {
+    var filePath = state.update.downloadedPath;
+    if (!filePath) { FS.toast({ tone: 'warn', title: '安装包尚未下载' }); return; }
+    if (!hasApi('runUpdateInstaller')) { previewApiToast('当前环境不支持运行安装包'); return; }
+    FS.confirm({
+      title: '运行更新安装包',
+      text: '将启动下载好的安装包完成升级，安装过程中应用可能需要关闭。是否继续？',
+      confirmText: '运行安装包',
+      onConfirm: function () {
+        window.fsapi.runUpdateInstaller(filePath).then(function (res) {
+          var out = res || {};
+          if (out.ok === false) {
+            FS.toast({ tone: 'error', title: '无法运行安装包', text: strOr(out.error, '系统拒绝运行该文件') });
+            return;
+          }
+          FS.toast({ tone: 'success', title: '已启动安装包', text: '按安装向导完成后重新打开应用。' });
+        }).catch(function (err) {
+          FS.toast({ tone: 'error', title: '无法运行安装包', text: FS.errText(err, '系统拒绝运行该文件') });
+        });
+      }
+    });
+  }
+  function openReleasePage() {
+    var url = String((state.update.result && state.update.result.releaseUrl) || '').trim();
+    if (!url) { FS.toast({ tone: 'warn', title: '发布页地址为空', text: '请到 GitHub 仓库手动查看版本。' }); return; }
+    if (!hasApi('openExternal')) { previewApiToast('当前环境不支持打开链接'); return; }
+    Promise.resolve().then(function () {
+      return window.fsapi.openExternal(url);
+    }).then(function (res) {
+      if (res && typeof res === 'object' && res.ok === false) throw new Error(res.error || '系统拒绝打开该链接');
+    }).catch(function (err) {
+      FS.toast({ tone: 'error', title: '打开发布页失败', text: FS.errText(err, '系统拒绝打开该链接') });
+    });
+  }
+
+  /* ---------- 关于：数据目录动作 ---------- */
+  function startDataDirProgress() {
+    if (unsubDataDirProgress || !hasApi('onDataDirProgress')) return;
+    try {
+      var off = window.fsapi.onDataDirProgress(function (p) {
+        if (!p) return;
+        var percent = (p.percent === null || p.percent === undefined) ? null : numOr(p.percent, 0);
+        state.datadir.progress = { step: strOr(p.step, ''), label: strOr(p.label, ''), percent: percent };
+        renderPanelIfActive('about');
+      });
+      unsubDataDirProgress = typeof off === 'function' ? off : null;
+    } catch (e) {
+      unsubDataDirProgress = null;
+    }
+  }
+  function stopDataDirProgress() {
+    if (!unsubDataDirProgress) return;
+    try { unsubDataDirProgress(); } catch (e) { /* 订阅已失效 */ }
+    unsubDataDirProgress = null;
+  }
+  function dataDirErrorText(res) {
+    var code = strOr(res && res.code, '');
+    if (code === 'DATA_TARGET_OCCUPIED') return '目标目录已有 OpinionLens 数据（app.db），请选择空目录';
+    if (code === 'DATA_TARGET_NOT_WRITABLE') return '目标目录不可写，请换一个有写入权限的目录';
+    if (code === 'DATA_MIGRATE_FAILED') return strOr(res && res.error, '迁移失败，旧目录未受影响，请稍后重试');
+    return strOr(res && res.error, '迁移数据目录失败');
+  }
+  function chooseDataDir() {
+    var st = state.datadir;
+    if (st.migrating || st.picking) return;
+    if (!hasApi('chooseDataDir') || !hasApi('migrateDataDir')) { previewApiToast('当前环境不支持更改数据目录'); return; }
+    st.picking = true;
+    st.error = '';
+    renderPanelIfActive('about');
+    window.fsapi.chooseDataDir().then(function (res) {
+      var out = res || {};
+      if (!out.ok) {
+        if (!out.canceled) st.error = strOr(out.error, '选择目录失败');
+        return;
+      }
+      var target = String(out.path || '').trim();
+      if (!target) return;
+      st.picking = false;
+      renderPanelIfActive('about');
+      FS.confirm({
+        title: '更改数据目录',
+        text: '将停止本地服务，把现有数据复制到 ' + target + '；旧目录保留不删除，迁移完成后应用会自动重启。是否继续？',
+        confirmText: '开始迁移',
+        onConfirm: function () { migrateDataDir(target); }
+      });
+    }).catch(function (err) {
+      st.error = FS.errText(err, '选择目录失败');
+      FS.toast({ tone: 'error', title: '选择目录失败', text: st.error });
+    }).finally(function () {
+      st.picking = false;
+      renderPanelIfActive('about');
+    });
+  }
+  function migrateDataDir(target) {
+    var st = state.datadir;
+    if (st.migrating) return;
+    if (!hasApi('migrateDataDir')) { previewApiToast('当前环境不支持迁移数据目录'); return; }
+    st.migrating = true;
+    st.error = '';
+    st.progress = { step: 'starting', label: '准备迁移…', percent: null };
+    startDataDirProgress();
+    renderPanelIfActive('about');
+    window.fsapi.migrateDataDir(target).then(function (res) {
+      var out = res || {};
+      if (out.ok === false) {
+        st.error = dataDirErrorText(out);
+        FS.toast({ tone: 'error', title: '迁移数据目录失败', text: st.error });
+        return;
+      }
+      st.progress = { step: 'restarting', label: '重启应用…', percent: 100 };
+      FS.toast({ tone: 'success', title: '已迁移到 ' + strOr(out.target, target), text: '正在重启…', duration: 6000 });
+    }).catch(function (err) {
+      st.error = FS.errText(err, '迁移数据目录失败');
+      FS.toast({ tone: 'error', title: '迁移数据目录失败', text: st.error });
+    }).finally(function () {
+      st.migrating = false;
+      stopDataDirProgress();
+      if (st.error) st.progress = null;
+      renderPanelIfActive('about');
+    });
+  }
+  function resetDataDir() {
+    var st = state.datadir;
+    if (st.migrating) return;
+    if (!hasApi('resetDataDir')) { previewApiToast('当前环境不支持恢复默认目录'); return; }
+    var info = FS.info || {};
+    var defaultDir = strOr(info.dataDirDefault, '%APPDATA%\\OpinionLens');
+    FS.confirm({
+      title: '恢复默认数据目录',
+      text: '将数据目录恢复为默认的 ' + defaultDir + ' 并重启应用。当前自定义目录中的文件不会被删除（需要时可先手动复制到默认目录）。是否继续？',
+      confirmText: '恢复并重启',
+      danger: true,
+      onConfirm: function () {
+        st.migrating = true;
+        st.error = '';
+        st.progress = { step: 'restarting', label: '写入配置并重启…', percent: null };
+        renderPanelIfActive('about');
+        window.fsapi.resetDataDir().then(function (res) {
+          var out = res || {};
+          if (out.ok === false) {
+            st.error = strOr(out.error, '恢复默认目录失败');
+            FS.toast({ tone: 'error', title: '恢复默认目录失败', text: st.error });
+            return;
+          }
+          FS.toast({ tone: 'success', title: '已恢复默认数据目录', text: '正在重启…', duration: 6000 });
+        }).catch(function (err) {
+          st.error = FS.errText(err, '恢复默认目录失败');
+          FS.toast({ tone: 'error', title: '恢复默认目录失败', text: st.error });
+        }).finally(function () {
+          st.migrating = false;
+          st.progress = null;
+          renderPanelIfActive('about');
+        });
+      }
+    });
+  }
 
   /* ------------------------------------------------------------ 事件绑定 */
   function openModalWith(opts) {
@@ -1469,6 +1911,13 @@
       case 'open-data-dir': openDataDir(); break;
       case 'open-logs-dir': openLogsDir(); break;
       case 'copy-diag': copyDiag(); break;
+      case 'check-update': checkForUpdate(); break;
+      case 'download-update': downloadUpdatePackage(); break;
+      case 'run-installer': runInstaller(); break;
+      case 'open-release': openReleasePage(); break;
+      case 'dismiss-update': state.update.dismissed = true; renderPanelIfActive('about'); break;
+      case 'choose-data-dir': chooseDataDir(); break;
+      case 'reset-data-dir': resetDataDir(); break;
       default: break;
     }
   }
@@ -1561,6 +2010,8 @@
       FS.toast({ tone: 'info', title: '正在刷新设置…', duration: 1600 });
     },
     destroy: function () {
+      stopUpdateProgress();
+      stopDataDirProgress();
       unbindPageEvents(viewEl);
       closeModals();
     }

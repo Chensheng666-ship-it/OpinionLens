@@ -696,6 +696,26 @@ class AccountManager:
             self.state.set_setting("pool.platform_min_interval_s", value)
         return self.settings()
 
+    def _refund_quota(self, account_id: str, runs: int = 0, platform_runs: int = 0) -> None:
+        """回滚一次「没有真正打到平台」的尝试占用的日配额（例如未登录直接失败）。
+
+        与 :meth:`_bump_quota` 不同，这里做减法并在 SQL 层夹到 0，避免出现负数配额。
+        """
+        account_id = str(account_id or "")
+        if not account_id:
+            return
+        self.state.execute(
+            "UPDATE account_quota SET runs = MAX(0, runs - ?), platform_runs = MAX(0, platform_runs - ?), "
+            "updated_at = ? WHERE account_id = ? AND day = ?",
+            (
+                max(0, int(runs)),
+                max(0, int(platform_runs)),
+                now_ts(),
+                account_id,
+                _today(),
+            ),
+        )
+
     def quota_row(self, account_id: str, day: Optional[str] = None) -> Dict[str, Any]:
         day_str = _today(day)
         rows = self.state.query(
@@ -1070,8 +1090,16 @@ class AccountManager:
         account_id: str = "",
     ) -> None:
         attempt_int = max(1, _to_int(attempt, 1))
+        status_str = str(status or "failed")
+        # 先取当前行：既拿到账号（调用方可能不传），也用来判断这次是不是「running → login_invalid」的首次跃迁，
+        # 避免重复 finish 造成配额被多次回滚。
+        prev_rows = self.state.query(
+            "SELECT status, account_id FROM run_accounts WHERE run_id = ? AND platform = ? AND attempt = ?",
+            (str(run_id), str(platform), attempt_int),
+        )
+        prev = dict(prev_rows[0]) if prev_rows else {}
         sets = "status = ?, message = ?, finished_at = ?"
-        params: List[Any] = [str(status or "failed"), str(message or ""), now_ts()]
+        params: List[Any] = [status_str, str(message or ""), now_ts()]
         where = "run_id = ? AND platform = ? AND attempt = ?"
         args = [str(run_id), str(platform), attempt_int]
         if account_id:
@@ -1080,6 +1108,11 @@ class AccountManager:
         self.state.execute(
             "UPDATE run_accounts SET %s WHERE %s" % (sets, where), tuple(params + args)
         )
+        # 未登录直接失败：这次尝试根本没打到平台的内容接口，不该白吃一次「日采集次数」。
+        # mark_attempt() 在尝试开始时已 +1，这里在终态确认后回滚（幂等：只对 running→login_invalid 生效）。
+        if status_str == "login_invalid" and str(prev.get("status") or "") == "running":
+            target_account = str(account_id or prev.get("account_id") or "")
+            self._refund_quota(target_account, runs=1, platform_runs=1)
 
     def max_attempt(self, run_id: str, platform: str) -> int:
         """该 run 该平台已有最大尝试序号（续采时 attempt 从其后继续，避免主键覆盖历史）。"""

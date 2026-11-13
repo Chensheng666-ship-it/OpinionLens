@@ -21,6 +21,11 @@ if (Test-Path (Join-Path $root 'engine\test_engine.py')) {
 if (Test-Path (Join-Path $root 'sidecar\test_exporter.py')) {
     Step "exporter self-test" { & $python (Join-Path $root 'sidecar\test_exporter.py') }
 }
+# 更新逻辑（版本比较 / 安装包挑选）：纯 Node，无需 Electron 与网络
+$updateTest = Join-Path $root 'scripts\test_update_logic.js'
+if ((Test-Path $updateTest) -and (Get-Command node -ErrorAction SilentlyContinue)) {
+    Step "update logic unit test (node)" { node $updateTest }
+}
 if (Test-Path (Join-Path $root 'sidecar\selftest.py')) {
     Step "sidecar self-test" { & $python (Join-Path $root 'sidecar\selftest.py') }
 }

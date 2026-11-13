@@ -255,17 +255,49 @@ def preview_run(db_path: str, keywords: list[str], started_ts: int, limit: int =
 - 关闭窗口/退出时杀掉 sidecar 进程树；sidecar 启动失败要在窗口内提示错误（renderer 显示）。
 - 开发辅助参数：`electron . --screenshot <out.png>` → 页面加载完成 2s 后 `webContents.capturePage()` 存 PNG 并退出（供验收/自动化截图使用）；`--no-sidecar` 仅调试 UI。
 - 日志：sidecar stdout 末尾写 `<data-dir>/logs/sidecar.log`。
+- **版本更新（2026-11-13）**：renderer 不直连外网，检查/下载都由主进程代做；确定性逻辑（版本比较、资产挑选）放在
+  `app/desktop/update.js`（纯 Node，可离线单测 `app/scripts/test_update_logic.js`）。
+  - `app:checkUpdate` → 查 `https://api.github.com/repos/<FS_UPDATE_REPO or SolitudeZY/OpinionLens>/releases/latest`，
+    返回 `{ok, current, latest, hasUpdate, releaseUrl, releaseName, notes(≤4000 字), publishedAt,
+    download:{name,size,url}|null, source:'api'|'redirect', warning?, error?}`；
+    GitHub 匿名 API 限流/不可用时退化为解析 `releases/latest` 的 302 Location 拿 tag（`source:'redirect'`，`download:null`）。
+  - `app:downloadUpdate({url,name})` → 仅允许 https 且 host ∈ {github.com, objects.githubusercontent.com, *githubusercontent.com}；
+    流式下载到 `<tmp>/OpinionLens-update/<name>`，进度通过 `app:updateProgress {received,total,percent}` 推送；
+    落盘后校验 PE 头 `MZ`，不通过则删除并报错。
+  - `app:runUpdateInstaller(path)` → 只允许运行 `<tmp>/OpinionLens-update/` 下的安装包，`shell.openPath` 启动。
+- **数据目录可迁移（2026-11-13）**：默认 `%APPDATA%\OpinionLens`（源码运行 `app/data`），用户可改到其他盘。
+  - 位置记录固定写在 `%APPDATA%\OpinionLens\user-config.json`（`{dataDir, dataDirUpdatedAt}`）——不跟着数据目录走，
+    否则换盘后找不到自己的配置；`app:info` 增补 `dataDirDefault / dataDirCustom / userConfigPath`。
+  - `app:chooseDataDir` → `dialog.showOpenDialog({properties:['openDirectory','createDirectory']})`；
+  - `app:migrateDataDir(target)` → 校验（绝对路径、不与当前目录互含、目标已存在 `app.db` 时拒绝 `DATA_TARGET_OCCUPIED`、
+    写探针文件校验可写 `DATA_TARGET_NOT_WRITABLE`）→ 停 sidecar → 复制（跳过 `electron/` 缓存与 `compat-no-sandbox.flag`）
+    → 写配置 → `app.relaunch()`；失败回滚（不写配置）并恢复 sidecar（`DATA_MIGRATE_FAILED`）。**旧目录保留不删**。
+  - `app:resetDataDir` → 删除配置里的 `dataDir` 并重启，回到默认目录。
 
 ### 4.2 preload.js
 
 ```js
 contextBridge.exposeInMainWorld('fsapi', {
-  getInfo: () => ipcRenderer.invoke('app:info'),            // {baseUrl, token, python, dataDir}
+  getInfo: () => ipcRenderer.invoke('app:info'),            // {baseUrl, token, python, dataDir, dataDirDefault, dataDirCustom, userConfigPath, appVersion, ...}
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url), // 采集动态原文链接（仅 http/https）
   openPath: (p) => ipcRenderer.invoke('app:openPath', p),
-  showItemInFolder: (p) => ipcRenderer.invoke('app:showItemInFolder', p)
+  showItemInFolder: (p) => ipcRenderer.invoke('app:showItemInFolder', p),
+  // 版本更新
+  checkUpdate: () => ipcRenderer.invoke('app:checkUpdate'),
+  downloadUpdate: (payload) => ipcRenderer.invoke('app:downloadUpdate', payload),   // {url, name}
+  runUpdateInstaller: (p) => ipcRenderer.invoke('app:runUpdateInstaller', p),
+  onUpdateProgress: (cb) => subscribe('app:updateProgress', cb),                     // 返回取消订阅函数
+  // 数据目录
+  chooseDataDir: () => ipcRenderer.invoke('app:chooseDataDir'),
+  migrateDataDir: (p) => ipcRenderer.invoke('app:migrateDataDir', p),
+  resetDataDir: () => ipcRenderer.invoke('app:resetDataDir'),
+  onDataDirProgress: (cb) => subscribe('app:dataDirProgress', cb)                    // {step,label,percent?}
 });
 ```
+
+- `getInfo` 额外字段：`dataDirDefault`（默认目录）、`dataDirCustom`（是否已自定义）、`userConfigPath`、`platform`、`arch`、`updateRepo`。
+- 进度类通道由主进程 `webContents.send` 推送，`subscribe()` 只做「注册 + 返回取消函数」，**不得**把 `ipcRenderer` 本身暴露给页面。
+- 渲染层必须在 `window.fsapi` 不存在时（`preview.js` 静态预览 / 浏览器直开）优雅降级：更新与数据目录相关按钮显示「桌面端可用」，不得抛错。
 
 ### 4.3 renderer
 
@@ -387,6 +419,10 @@ is_default/quota:{day,runs,saved_items,day_runs_limit,day_items_limit,runs_remai
   `platforms[].account_id/account_alias/account_attempts`。
 - **legacy 兼容**：旧版单账号（`profile_layout="legacy"`）不会被登录态/冷却硬过滤——始终回退启动 engine，
   由 engine 判定未登录；失败切号只针对 v2 账号池账号。
+- **日配额口径（2026-11-13 修正）**：`runs` 在**一次采集尝试开始时** +1（防止并发超用），但若该尝试终态是
+  `login_invalid`（未登录/登录失效，根本没打到平台内容接口），`finish_attempt` 会回滚这次计数（幂等：只对
+  `running → login_invalid` 的首次跃迁生效）。自动重试与续采各算一次（它们确实发起了平台请求）；
+  `risk_blocked` 不退（已打到平台）。`saved_items` 只在成功入库时累加。
 - 错误码：`NO_ACCOUNT 409`、`ACCOUNT_BUSY 409`、`ACCOUNT_DISABLED 409`、`ACCOUNT_NOT_FOUND 404`、
   `QUOTA_EXCEEDED 429`、`PROFILE_LAYOUT_CONFLICT 409`、`PROFILE_MIGRATE_FAILED 500`、`DELETE_FAILED 500`；
   旧 `/api/accounts/*` 并发冲突保持 `BUSY 409`。

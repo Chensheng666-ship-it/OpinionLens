@@ -2,6 +2,56 @@
 
 本项目自开源基线 0.1.0 起按版本记录变更。
 
+## 0.4.0 · 2026-11-13（软件更新 · 数据目录可迁移 · 界面过渡动效）
+
+**软件更新（设置 → 关于 → 软件更新）**
+- 「检查更新」对比 GitHub Release 的 tag 与本地 `package.json` 版本（`hasUpdate`），显示当前/最新版本、发布日期、
+  发布说明（截断 4000 字）；两个出口：**打开发布页**（系统浏览器）与**下载安装包**（主进程流式下载、进度条、
+  校验 PE `MZ` 头后由「运行安装包」启动）。未签名构建同样可用，不依赖 electron-updater / `latest.yml`。
+- 新增 `app/desktop/update.js`（纯 Node）：`compareVersions / isNewer / pickInstallerAsset`，语义化比较
+  （`1.0.0 > 1.0.0-beta.1`，数值比较）与资产挑选（排除 `.blockmap`/`.zip`/`.yml`，优先 Setup+版本号+x64）。
+- GitHub 匿名 API 限流/不可用时自动退化：解析 `releases/latest` 的 302 Location 拿 tag（`source:'redirect'`），
+  此时只能引导到发布页；UI 明确提示降级来源。
+- 下载域名白名单（`github.com` / `objects.githubusercontent.com` / `*githubusercontent.com`），
+  安装包只允许运行下载目录 `<tmp>/OpinionLens-update/` 内的文件。
+
+**数据目录可迁移（设置 → 关于 → 数据存储）**
+- 数据目录不再死绑 `%APPDATA%\OpinionLens`：可在应用内选新目录，主进程「停 sidecar → 复制（跳过 `electron/`
+  Chromium 缓存与兼容标记）→ 写配置 → 自动重启」；**旧目录保留不删**，确认后再手动清理。
+- 位置记录固定写 `%APPDATA%\OpinionLens\user-config.json` 的 `dataDir`（不跟随数据目录，换盘后仍能找到），
+  「恢复默认目录」直接删该字段并重启。
+- 迁移前校验：绝对路径、与当前目录不互为上下级、目标已有 `app.db` 时拒绝（`DATA_TARGET_OCCUPIED`）、
+  写探针校验可写（`DATA_TARGET_NOT_WRITABLE`）；失败不写配置、回滚并恢复 sidecar（`DATA_MIGRATE_FAILED`）。
+
+**版本号与发版**
+- 新增 `scripts/bump_version.ps1`：一次同步 `package.json` / `package-lock.json` / `app/sidecar/version.py`
+  `FALLBACK_VERSION` / README 徽章 / CHANGELOG 小节骨架；本版本即由它升到 0.4.0。
+- 新增 `docs/发布与自动更新.md`：版本号单一来源链路、发版顺序（自测→升版→tag→出包→发 Release）、
+  检查更新机制与限流降级、数据目录迁移说明。
+
+**界面与动效**
+- 页面切换：`#view` 入场动画（`app.js` 的 `playViewEnter()` 覆盖 offline/页面不存在/渲染成功/渲染失败四条分支，
+  强制重排以重放）；设置页 tab 面板切换用 `.panel-enter`，数据刷新重渲染不重播，避免进度刷新闪烁。
+- 左侧导航/设置 tab/chip/列表行/按钮补过渡（`styles.css` 新增动效层，只动 `opacity`/`transform`/颜色，
+  不碰 `height`/`margin`，无 CLS）；全部包在 `@media (prefers-reduced-motion: no-preference)` 内，
+  reduce 时直接呈现最终态。
+
+**修复**
+- **未登录平台也吃「日采集次数」配额**：`runs` 原本在尝试开始时 +1，未登录直接失败（`login_invalid`）也会白扣一次。
+  现在 `finish_attempt()` 对 `running → login_invalid` 的终态做配额回滚（`_refund_quota`，SQL 层夹到 0、幂等不重复退），
+  自动重试/续采照常计数、`risk_blocked` 不退；账号卡片配额 tooltip 补口径说明
+  （「未登录直接失败的不计入，自动重试/续采各算一次」），契约 §7.4 同步。
+- **「迁移旧目录」看不懂**：账号池里该按钮补 hover 提示，说明文案改为先讲「旧目录是什么（0.3 前每平台一个共用
+  浏览器目录，只能存一个账号登录态）」再讲「点它做什么（搬到该账号独立目录、空闲时执行、幂等、可重复点）」。
+
+**验证**
+- `node --check` 全部通过；`python -m compileall app` 通过；离线自测 `selftest.ps1` 全绿（新增 node 更新逻辑单测 7 项；
+  sidecar 自测的「版本号一致性」断言随版本升到 0.4.0）。
+- CDP 端到端（真实 Electron + 真实 IPC）：`getInfo` 新字段、`checkUpdate` 真实请求与降级、`migrateDataDir` 三条校验分支、
+  设置-关于两张卡渲染、`panel-enter`/`view-enter` 挂载、点击「检查更新」后的 UI 反馈 —— 10/10 通过；
+  迁移往返实测：`app\data` → 临时目录（复制 278 MB、sidecar 在线）→ `resetDataDir` 回默认，配置与数据均正确。
+
+
 ## 0.3.0 · 2026-11-13（版本号统一 · 安装链路加固）
 
 **版本号唯一来源（修复界面/报告/包版本三处不一致）**

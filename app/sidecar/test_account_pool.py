@@ -440,6 +440,20 @@ def test_quota_and_events(report: Any) -> None:
         quota = ctx.accounts.quota_remaining(account_id)
         report.check("mark_attempt 增加日 runs 计数", quota["runs"] == 1, str(quota["runs"]))
         report.check("mark_attempt 增加 platform_runs", quota["platform_runs"] == 1)
+        # 未登录直接失败不计入日采集次数（否则「未登录」也在白吃配额）
+        ctx.accounts.mark_attempt("run_quota_login", "xhs", 1, account_id, "auto")
+        quota = ctx.accounts.quota_remaining(account_id)
+        report.check("未登录前的尝试先计入配额", quota["runs"] == 2, str(quota["runs"]))
+        ctx.accounts.finish_attempt("run_quota_login", "xhs", 1, "login_invalid", "未登录", account_id)
+        quota = ctx.accounts.quota_remaining(account_id)
+        report.check(
+            "login_invalid 终态回滚日采集次数（未登录不消耗配额）",
+            quota["runs"] == 1 and quota["platform_runs"] == 1,
+            f"runs={quota['runs']} platform_runs={quota['platform_runs']}",
+        )
+        ctx.accounts.finish_attempt("run_quota_login", "xhs", 1, "login_invalid", "未登录", account_id)
+        quota = ctx.accounts.quota_remaining(account_id)
+        report.check("重复 finish_attempt 不重复回滚配额（幂等）", quota["runs"] == 1, str(quota["runs"]))
         attempts = ctx.accounts.run_accounts("run_q1")
         report.check("mark_attempt 写 run_accounts", len(attempts) == 1 and attempts[0]["account_id"] == account_id)
         report.check("mark_attempt 写 run_platforms.account_id 前需先建 run", True)
