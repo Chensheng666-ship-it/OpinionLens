@@ -228,6 +228,37 @@ try {
 if ($buildExit -ne 0) { Fail "electron-builder 失败（exit $buildExit），请查看上方日志" }
 Ok 'electron-builder 完成'
 
+# app.asar 白名单校验：main.js 里 `require('./xxx')` 的本地模块必须真的进包。
+# 漏一个就会在打包版启动时抛错——表现为「A JavaScript error occurred in the main process」
+# 弹窗卡住、main.log 一行不写（0.5.0 首次出包就踩过：update.js 没在 electron-builder.yml 的 files 里）。
+$asarPath = Join-Path $OutputDir 'win-unpacked\resources\app.asar'
+if (Test-Path -LiteralPath $asarPath) {
+    $mainSrc = Get-Content -LiteralPath (Join-Path $Desktop 'main.js') -Raw
+    $localRequires = @(
+        [regex]::Matches($mainSrc, "require\(\s*['""](\./[^'""]+)['""]\s*\)") |
+            ForEach-Object { $_.Groups[1].Value -replace '^\./', '' } |
+            Sort-Object -Unique
+    )
+    $asarCli = Join-Path $Desktop 'node_modules\@electron\asar\bin\asar.js'
+    if ($localRequires.Count -gt 0) {
+        if (Test-Path -LiteralPath $asarCli) {
+            $listing = (& node $asarCli list $asarPath 2>$null) -join "`n"
+            $missing = @()
+            foreach ($rel in $localRequires) {
+                $needle = '\' + ($rel -replace '/', '\')
+                if ($listing -notmatch [regex]::Escape($needle)) { $missing += $rel }
+            }
+            if ($missing.Count -gt 0) {
+                Fail ("app.asar 缺少主进程 local require 目标：{0}。请把它们加进 app/desktop/electron-builder.yml 的 files（建议用 `"*.js`" 通配）。" -f ($missing -join ', '))
+            }
+            Ok ("app.asar 已包含 {0} 个本地 require 目标：{1}" -f $localRequires.Count, ($localRequires -join ', '))
+        }
+        else {
+            Warn '未找到 @electron/asar，跳过 app.asar 内容校验'
+        }
+    }
+}
+
 # -----------------------------------------------------------------------------
 # 4. 产物信息（安装包路径 / 大小 / SHA256）
 # -----------------------------------------------------------------------------
@@ -328,7 +359,14 @@ if ($SkipVerify) {
         $proc = Start-Process -FilePath $installedExe -WorkingDirectory $VerifyDir -ArgumentList $argList -PassThru
         if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            Fail ("截图超时（{0}s）：{1}" -f $TimeoutSeconds, ($argList -join ' '))
+            # 超时常见原因是主进程启动即报错并弹「A JavaScript error…」对话框（不写日志、不生成截图）。
+            # 把已安装版主进程日志尾部带出来，避免只看到一个裸超时。
+            $appLog = Join-Path $env:APPDATA 'OpinionLens\logs\main.log'
+            $logTail = if (Test-Path -LiteralPath $appLog) {
+                ((Get-Content -LiteralPath $appLog -Tail 10) -join "`n")
+            }
+            else { "（未生成主进程日志：$appLog）" }
+            Fail ("截图超时（{0}s）：{1}`n最近主进程日志（{2}）：`n{3}" -f $TimeoutSeconds, ($argList -join ' '), $appLog, $logTail)
         }
         if ($proc.ExitCode -ne 0) { Fail ("截图进程退出码 {0}：{1}" -f $proc.ExitCode, ($argList -join ' ')) }
         if (-not (Test-Path -LiteralPath $OutPng)) { Fail "截图文件未生成：$OutPng" }

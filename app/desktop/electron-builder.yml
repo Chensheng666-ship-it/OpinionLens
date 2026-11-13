@@ -24,9 +24,11 @@ directories:
   output: ../../build/installer/output
 
 # app.asar 只装 Electron 侧代码；运行时依赖全部走 extraResources。
+# 注意：主进程根目录**所有** .js 都要进包——main.js 里的 `require('./update')` 之类，
+# 漏一个就会在打包版启动时抛错（表现为一个「A JavaScript error occurred in the main process」
+# 弹窗卡住、且 main.log 一行都不写）。所以这里用 `*.js` 通配，不要逐个列文件名。
 files:
-  - main.js
-  - preload.js
+  - "*.js"
   - renderer/**/*
   - package.json
   - "!**/*.map"
