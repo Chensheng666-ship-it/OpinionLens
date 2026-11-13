@@ -1,0 +1,8 @@
+# 运行期数据、依赖与本地产物（不提交）
+data/
+desktop/node_modules/
+desktop/dist/
+**/__pycache__/
+*.pyc
+*.log
+!README.md

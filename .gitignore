@@ -1,0 +1,63 @@
+# ============================================================================
+# 舆见 OpinionLens · 仓库排除规则
+#
+# 原则：只提交「源代码 + 文档」，绝不提交运行期数据、登录态、
+#       第三方引擎源码副本、真实采集样例与任何密钥。
+# ============================================================================
+
+# ---- 第三方采集引擎（由 scripts/setup_mediacrawler.ps1 克隆，不入库） ----
+/MediaCrawler/
+/MediaCrawler_backup_*/
+/mediaCrawler-*.zip
+
+# ---- 运行期数据：登录态 / 浏览器 profile / SQLite / Excel / 日志 / 二维码 ----
+/app/data/
+
+# ---- 测试夹具：自测时自动生成，可能含真实数据快照（保留说明文件） ----
+/app/sidecar/_fixtures/*
+!/app/sidecar/_fixtures/README.md
+
+# ---- 内部侦察 / 临时分析产物（非仓库内容） ----
+/_recon/
+
+# ---- 报告管线运行产物与本地配置（config.json 可能含密钥，勿提交） ----
+/app/report_pipeline/out/
+/app/report_pipeline/config.json
+
+# ---- 依赖与构建产物 ----
+**/node_modules/
+**/__pycache__/
+**/dist/
+**/build/
+*.py[cod]
+*.log
+
+# ---- 环境变量与密钥（保留 example） ----
+.env
+*.env
+.env.local
+.env.*.local
+!.env.example
+!*.env.example
+*.pem
+*.key
+
+# ---- 数据库与表格文件（运行期产物） ----
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.xlsx
+*.xls
+
+# ---- 开发过程的临时截图（不属于产品文档） ----
+/app/desktop/renderer/_dev/shots/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.stackdump

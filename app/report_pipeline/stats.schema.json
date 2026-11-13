@@ -1,0 +1,406 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://opinionlens.local/schemas/public-sentiment-stats.schema.json",
+  "title": "舆情周报统计 stats.json",
+  "description": "Excel→统计→HTML 流水线中由代码计算出的确定性统计结果。模型只能读取本文件写叙述，不得修改任何统计值。",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generator",
+    "source",
+    "report",
+    "totals",
+    "sentiment",
+    "risk",
+    "platform_ranking",
+    "trend",
+    "negative_events",
+    "positive_events",
+    "keywords",
+    "comments",
+    "data_quality",
+    "samples",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$", "description": "stats 结构版本"},
+    "stats_fingerprint": {"type": "string", "description": "stats 核心数据 sha256 指纹（写入 HTML 便于质检比对）"},
+    "generator": {
+      "type": "object",
+      "required": ["name", "version", "generated_at"],
+      "properties": {
+        "name": {"type": "string"},
+        "version": {"type": "string"},
+        "generated_at": {"type": "string"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["excel_path", "excel_sha256", "sheets"],
+      "properties": {
+        "excel_path": {"type": "string"},
+        "excel_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "excel_size_bytes": {"type": "integer", "minimum": 0},
+        "sheets": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "read_at": {"type": "string"}
+      }
+    },
+    "report": {
+      "type": "object",
+      "required": ["title", "brand", "report_date", "version", "scope_mode", "period", "collected_at", "data_span", "trend_window", "template_version"],
+      "properties": {
+        "title": {"type": "string"},
+        "brand": {"type": "string"},
+        "report_date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "version": {"type": "integer", "minimum": 1},
+        "scope_mode": {"type": "string", "enum": ["snapshot", "period"]},
+        "period": {
+          "type": "object",
+          "required": ["start", "end", "label"],
+          "properties": {
+            "start": {"type": "string"},
+            "end": {"type": "string"},
+            "label": {"type": "string"}
+          }
+        },
+        "collected_at": {"type": "string"},
+        "data_span": {
+          "type": "object",
+          "required": ["start", "end"],
+          "properties": {"start": {"type": "string"}, "end": {"type": "string"}}
+        },
+        "trend_window": {
+          "type": "object",
+          "required": ["start", "end", "days"],
+          "properties": {
+            "start": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+            "end": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+            "days": {"type": "integer", "minimum": 1, "maximum": 90}
+          }
+        },
+        "copyright_owner": {"type": "string"},
+        "data_source": {"type": "string"},
+        "template_version": {"type": "string", "pattern": "^public-sentiment-weekly@v[0-9]+$"}
+      }
+    },
+    "totals": {
+      "type": "object",
+      "required": ["items", "content", "comments", "platforms", "by_platform", "content_interactions"],
+      "properties": {
+        "items": {"type": "integer", "minimum": 0},
+        "content": {"type": "integer", "minimum": 0},
+        "comments": {"type": "integer", "minimum": 0},
+        "platforms": {"type": "integer", "minimum": 0, "maximum": 20},
+        "content_platforms": {"type": "integer", "minimum": 0, "maximum": 20},
+        "content_engagement": {"type": "number", "minimum": 0},
+        "by_platform": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["platform", "content", "comments", "items"],
+            "properties": {
+              "platform": {"type": "string"},
+              "content": {"type": "integer", "minimum": 0},
+              "comments": {"type": "integer", "minimum": 0},
+              "items": {"type": "integer", "minimum": 0}
+            }
+          }
+        },
+        "content_interactions": {
+          "type": "object",
+          "required": ["likes", "comments", "shares"],
+          "additionalProperties": {"type": "number", "minimum": 0}
+        }
+      }
+    },
+    "sentiment": {
+      "type": "object",
+      "required": ["overall", "content", "comments", "by_platform"],
+      "properties": {
+        "overall": {"$ref": "#/definitions/sentimentBlock"},
+        "content": {"$ref": "#/definitions/sentimentBlock"},
+        "comments": {"$ref": "#/definitions/sentimentBlock"},
+        "by_platform": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["platform", "overall", "content", "comments"],
+            "properties": {
+              "platform": {"type": "string"},
+              "overall": {"$ref": "#/definitions/sentimentBlock"},
+              "content": {"$ref": "#/definitions/sentimentBlock"},
+              "comments": {"$ref": "#/definitions/sentimentBlock"}
+            }
+          }
+        }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "required": ["level", "level_code", "negative_ratio", "content_negative_ratio", "negative_events", "thresholds", "basis"],
+      "properties": {
+        "level": {"type": "string", "enum": ["低", "中", "高"]},
+        "level_code": {"type": "string", "enum": ["low", "medium", "high"]},
+        "negative_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "content_negative_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+        "negative_events": {"type": "integer", "minimum": 0},
+        "thresholds": {
+          "type": "object",
+          "required": ["low", "medium"],
+          "properties": {
+            "low": {"type": "number", "minimum": 0, "maximum": 1},
+            "medium": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        },
+        "basis": {"type": "string"}
+      }
+    },
+    "platform_ranking": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rank", "platform", "mentions", "content", "comments", "share", "content_share", "content_dominant_sentiment", "negative_ratio"],
+        "properties": {
+          "rank": {"type": "integer", "minimum": 1},
+          "platform": {"type": "string"},
+          "mentions": {"type": "integer", "minimum": 0},
+          "content": {"type": "integer", "minimum": 0},
+          "comments": {"type": "integer", "minimum": 0},
+          "share": {"type": "number", "minimum": 0, "maximum": 1},
+          "content_share": {"type": "number", "minimum": 0, "maximum": 1},
+          "content_dominant_sentiment": {"type": "string", "enum": ["正面为主", "中性为主", "负面为主"]},
+          "negative_ratio": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    },
+    "trend": {
+      "type": "object",
+      "required": ["granularity", "window", "platforms", "days", "window_totals", "peak", "note"],
+      "properties": {
+        "granularity": {"type": "string", "enum": ["day", "week", "month"]},
+        "window": {
+          "type": "object",
+          "required": ["start", "end", "days"],
+          "properties": {
+            "start": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+            "end": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+            "days": {"type": "integer", "minimum": 1, "maximum": 90}
+          }
+        },
+        "platforms": {"type": "array", "items": {"type": "string"}},
+        "days": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["date", "label", "weekday", "total", "content", "comments", "by_platform"],
+            "properties": {
+              "date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+              "label": {"type": "string"},
+              "weekday": {"type": "string"},
+              "total": {"type": "integer", "minimum": 0},
+              "content": {"type": "integer", "minimum": 0},
+              "comments": {"type": "integer", "minimum": 0},
+              "by_platform": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+            }
+          }
+        },
+        "window_totals": {
+          "type": "object",
+          "required": ["items", "content", "comments", "by_platform", "daily_average"],
+          "properties": {
+            "items": {"type": "integer", "minimum": 0},
+            "content": {"type": "integer", "minimum": 0},
+            "comments": {"type": "integer", "minimum": 0},
+            "daily_average": {"type": "number", "minimum": 0},
+            "by_platform": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+          }
+        },
+        "peak": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "required": ["date", "label", "total"],
+              "properties": {
+                "date": {"type": "string"},
+                "label": {"type": "string"},
+                "total": {"type": "integer", "minimum": 0}
+              }
+            }
+          ]
+        },
+        "note": {"type": "string"}
+      }
+    },
+    "negative_events": {"type": "array", "items": {"$ref": "#/definitions/event"}},
+    "positive_events": {"type": "array", "items": {"$ref": "#/definitions/event"}},
+    "keywords": {
+      "type": "object",
+      "required": ["method", "documents", "brand_terms", "top", "related"],
+      "properties": {
+        "method": {"type": "string"},
+        "documents": {"type": "integer", "minimum": 0},
+        "brand_terms": {"type": "array", "items": {"type": "string"}},
+        "top": {"type": "array", "items": {"$ref": "#/definitions/keyword"}},
+        "related": {"type": "array", "items": {"$ref": "#/definitions/keyword"}}
+      }
+    },
+    "comments": {
+      "type": "object",
+      "required": ["total", "by_platform", "sentiment", "avg_likes", "comment_to_content_ratio", "top_liked"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 0},
+        "by_platform": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "sentiment": {"$ref": "#/definitions/sentimentBlock"},
+        "avg_likes": {"type": "number", "minimum": 0},
+        "max_likes": {"type": "number", "minimum": 0},
+        "comment_to_content_ratio": {"type": "number", "minimum": 0},
+        "top_liked": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["platform", "likes", "sentiment", "summary"],
+            "properties": {
+              "platform": {"type": "string"},
+              "likes": {"type": "number", "minimum": 0},
+              "sentiment": {"type": "string", "enum": ["positive", "neutral", "negative"]},
+              "summary": {"type": "string"},
+              "published_date": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "data_quality": {
+      "type": "object",
+      "required": ["sheet_row_counts", "content_items", "comment_items", "time_parse_failures", "content_id_precision_fixed", "relevance", "historical_share"],
+      "properties": {
+        "sheet_row_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "content_rows": {"type": "integer", "minimum": 0},
+        "comment_rows": {"type": "integer", "minimum": 0},
+        "content_items": {"type": "integer", "minimum": 0},
+        "comment_items": {"type": "integer", "minimum": 0},
+        "duplicate_contents_removed": {"type": "integer", "minimum": 0},
+        "duplicate_comments_removed": {"type": "integer", "minimum": 0},
+        "content_id_precision_fixed": {"type": "integer", "minimum": 0},
+        "comment_ids_numeric_risk": {"type": "integer", "minimum": 0},
+        "time_parse_failures": {"type": "integer", "minimum": 0},
+        "comments_unlinked": {"type": "integer", "minimum": 0},
+        "missing_url": {"type": "integer", "minimum": 0},
+        "content_fingerprint": {"type": "string"},
+        "relevance": {
+          "type": "object",
+          "required": ["brand_matched_content", "unmatched_content", "brand_match_rate"],
+          "properties": {
+            "brand_matched_content": {"type": "integer", "minimum": 0},
+            "unmatched_content": {"type": "integer", "minimum": 0},
+            "brand_match_rate": {"type": "number", "minimum": 0, "maximum": 1},
+            "prominent_content": {"type": "integer", "minimum": 0, "description": "品牌词出现在标题或正文前 400 字内的内容数"},
+            "prominent_content_rate": {"type": "number", "minimum": 0, "maximum": 1},
+            "positive_selection": {
+              "type": "object",
+              "properties": {
+                "total_positive_content": {"type": "integer", "minimum": 0},
+                "brand_relevant_positive": {"type": "integer", "minimum": 0},
+                "shown": {"type": "integer", "minimum": 0},
+                "rule": {"type": "string"}
+              }
+            }
+          }
+        },
+        "historical_share": {
+          "type": "object",
+          "required": ["items_in_trend_window", "items_historical", "historical_ratio"],
+          "properties": {
+            "items_in_trend_window": {"type": "integer", "minimum": 0},
+            "items_historical": {"type": "integer", "minimum": 0},
+            "historical_ratio": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        }
+      }
+    },
+    "samples": {
+      "type": "object",
+      "required": ["negative", "positive", "top_comments", "hot_keywords"],
+      "properties": {
+        "negative": {"type": "array", "items": {"type": "object"}},
+        "positive": {"type": "array", "items": {"type": "object"}},
+        "top_comments": {"type": "array", "items": {"type": "object"}},
+        "hot_keywords": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "definitions": {
+    "sentimentBlock": {
+      "type": "object",
+      "required": ["positive", "neutral", "negative", "total"],
+      "properties": {
+        "positive": {"$ref": "#/definitions/sentimentCount"},
+        "neutral": {"$ref": "#/definitions/sentimentCount"},
+        "negative": {"$ref": "#/definitions/sentimentCount"},
+        "total": {"type": "integer", "minimum": 0}
+      }
+    },
+    "sentimentCount": {
+      "type": "object",
+      "required": ["count", "ratio"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "ratio": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "event": {
+      "type": "object",
+      "required": ["event_id", "rank", "platform", "title", "summary", "url", "published_at", "interactions", "engagement", "heat_score", "days_old", "brand_match", "handling_status", "handling_code"],
+      "properties": {
+        "event_id": {"type": "string", "pattern": "^(NEG|POS)-[0-9]{2}$"},
+        "rank": {"type": "integer", "minimum": 1},
+        "platform": {"type": "string"},
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        "url": {"type": "string"},
+        "author": {"type": "string"},
+        "published_at": {"type": "string"},
+        "published_date": {"type": "string"},
+        "sentiment_raw": {"type": "string"},
+        "interactions": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0}},
+        "engagement": {"type": "number", "minimum": 0},
+        "heat_score": {"type": "number", "minimum": 0, "maximum": 100},
+        "heat_rank": {"type": "integer", "minimum": 1},
+        "days_old": {"type": "integer", "minimum": 0},
+        "brand_match": {"type": "boolean"},
+        "brand_terms": {"type": "array", "items": {"type": "string"}},
+        "brand_context": {"type": "boolean", "description": "是否与品牌强相关（标题命中 / 关键人物 / 品牌词出现在正文前 400 字内）"},
+        "brand_title_hit": {"type": "boolean"},
+        "brand_first_pos": {"type": "integer", "description": "品牌词/关键人物首次出现位置，-1 表示未出现"},
+        "key_people_hit": {"type": "array", "items": {"type": "string"}},
+        "entity_risk": {"oneOf": [{"type": "null"}, {"type": "string"}]},
+        "linked_comments": {
+          "type": "object",
+          "required": ["total", "negative"],
+          "properties": {
+            "total": {"type": "integer", "minimum": 0},
+            "negative": {"type": "integer", "minimum": 0},
+            "recent_negative": {"type": "integer", "minimum": 0}
+          }
+        },
+        "handling_status": {"type": "string"},
+        "handling_code": {"type": "string", "enum": ["archived", "watch", "pending"]},
+        "handling_basis": {"type": "string"}
+      }
+    },
+    "keyword": {
+      "type": "object",
+      "required": ["keyword", "doc_count", "ratio_of_docs", "frequency", "platforms"],
+      "properties": {
+        "keyword": {"type": "string"},
+        "doc_count": {"type": "integer", "minimum": 0},
+        "ratio_of_docs": {"type": "number", "minimum": 0, "maximum": 1},
+        "frequency": {"type": "integer", "minimum": 0},
+        "platforms": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

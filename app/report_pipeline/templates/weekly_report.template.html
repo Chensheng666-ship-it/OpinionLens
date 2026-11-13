@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-report-template="public-sentiment-weekly@v1">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="generator" content="report_pipeline/{{PIPELINE_VERSION}}">
+<meta name="report-template-version" content="{{TEMPLATE_VERSION}}">
+<meta name="report-version" content="{{REPORT_VERSION}}">
+<meta name="report-id" content="{{REPORT_ID}}">
+<meta name="report-date" content="{{REPORT_DATE}}">
+<meta name="report-scope" content="{{SCOPE_MODE}}">
+<meta name="stats-fingerprint" content="{{STATS_FINGERPRINT}}">
+<title>{{TITLE}}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", sans-serif;
+    background: #eceff4;
+    color: #1f2329;
+    padding: 24px 16px 48px;
+    line-height: 1.6;
+  }
+  .report {
+    max-width: 1000px;
+    margin: 0 auto;
+    background: #ffffff;
+    border-radius: 14px;
+    box-shadow: 0 4px 24px rgba(26, 95, 180, 0.08);
+    overflow: hidden;
+  }
+  /* ---------- 头部 ---------- */
+  .header {
+    background: linear-gradient(135deg, #124a8f 0%, #1a5fb4 55%, #3584e4 100%);
+    color: #fff;
+    padding: 34px 42px 28px;
+  }
+  .header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+  .header h1 { font-size: 27px; letter-spacing: 1px; margin-bottom: 10px; font-weight: 700; }
+  .version-badge {
+    flex: none;
+    background: rgba(255, 255, 255, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    color: #fff;
+    border-radius: 999px;
+    padding: 4px 14px;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+  }
+  .header .meta { font-size: 13px; opacity: 0.92; margin-top: 3px; }
+  .header .meta b { font-weight: 600; }
+  /* ---------- 数据量提醒 ---------- */
+  .data-warning {
+    margin: 0 0 18px;
+    padding: 12px 16px;
+    border: 1px solid #eedcbb;
+    border-radius: 8px;
+    background: #fbf2e1;
+    color: #7a4f10;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .data-warning b { color: #a46810; }
+  /* ---------- 主体 ---------- */
+  .content { padding: 30px 42px 34px; }
+  h2 {
+    font-size: 19px;
+    color: #124a8f;
+    border-left: 4px solid #3584e4;
+    padding-left: 12px;
+    margin: 38px 0 16px;
+    font-weight: 700;
+  }
+  section:first-of-type h2 { margin-top: 0; }
+  .section-kicker { font-size: 12px; color: #8a94a6; margin: -10px 0 14px 16px; letter-spacing: 0.4px; }
+  /* ---------- 指标卡 ---------- */
+  .summary-cards {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+  .card {
+    background: #f8f9fb;
+    border: 1px solid #e8eaf0;
+    border-radius: 10px;
+    padding: 16px 14px;
+    text-align: center;
+  }
+  .card .label { font-size: 12px; color: #6b7280; margin-bottom: 6px; }
+  .card .value { font-size: 25px; font-weight: 700; color: #1a5fb4; line-height: 1.2; }
+  .card .value small { font-size: 12px; font-weight: 400; color: #6b7280; }
+  .card .value.green { color: #16a34a; }
+  .card .value.red { color: #dc2626; }
+  .card .sub { font-size: 11px; color: #9ca3af; margin-top: 6px; }
+  /* ---------- 提示条 ---------- */
+  .insight {
+    font-size: 13px;
+    color: #3f4a5a;
+    background: #eff6ff;
+    border-left: 3px solid #60a5fa;
+    padding: 11px 15px;
+    border-radius: 0 8px 8px 0;
+    margin: 14px 0 6px;
+    line-height: 1.8;
+  }
+  .insight b { color: #124a8f; }
+  .insight.warn { background: #fef2f2; border-left-color: #f87171; }
+  .insight.muted { background: #f6f7f9; border-left-color: #cbd5e1; color: #5b6675; }
+  .ai-note { font-size: 12px; color: #8a94a6; margin: -4px 0 12px; }
+  /* ---------- 图表 ---------- */
+  .chart-box {
+    background: #f8f9fb;
+    border: 1px solid #e8eaf0;
+    border-radius: 10px;
+    padding: 18px 20px 14px;
+    margin-bottom: 14px;
+  }
+  .chart-box h3 { font-size: 14px; color: #374151; margin-bottom: 10px; font-weight: 600; }
+  .chart-wrap { position: relative; height: 320px; }
+  .chart-wrap canvas { width: 100% !important; }
+  .chart-head-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
+  .chart-head-row h3 { margin-bottom: 0; }
+  .chart-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .chart-hint { font-size: 11px; color: #8a94a6; }
+  .chart-tool-btn {
+    border: 1px solid #d8deea; background: #fff; color: #1a5fb4; border-radius: 6px;
+    padding: 3px 10px; font-size: 12px; cursor: pointer; font-family: inherit;
+  }
+  .chart-tool-btn:hover { background: #eef4ff; }
+  /* ---------- 表格 ---------- */
+  .table-wrap { width: 100%; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 14px; }
+  th {
+    background: #124a8f;
+    color: #fff;
+    padding: 10px 8px;
+    text-align: center;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  td {
+    padding: 10px 8px;
+    border-bottom: 1px solid #e8eaf0;
+    text-align: center;
+    color: #374151;
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: #f8f9fb; }
+  td.left { text-align: left; }
+  .cell-strong { font-weight: 600; color: #1f2329; }
+  .cell-sub { display: block; font-size: 11px; color: #9ca3af; margin-top: 2px; }
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .badge.solved { background: #dcfce7; color: #15803d; }
+  .badge.doing { background: #fef9c3; color: #a16207; }
+  .badge.watch { background: #e0e7ff; color: #4338ca; }
+  .badge.pending { background: #ffe4e6; color: #be123c; }
+  .badge.info { background: #e0f2fe; color: #0369a1; }
+  .rank-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    font-weight: 700;
+    font-size: 12px;
+    color: #fff;
+  }
+  .r1 { background: #dc2626; } .r2 { background: #ea580c; } .r3 { background: #ca8a04; }
+  .r4, .r5, .r6 { background: #94a3b8; }
+  .positive-bar { background: #16a34a; color: #fff; border-radius: 4px; padding: 2px 8px; font-size: 12px; white-space: nowrap; }
+  .negative-bar { background: #dc2626; color: #fff; border-radius: 4px; padding: 2px 8px; font-size: 12px; white-space: nowrap; }
+  .neutral-bar { background: #94a3b8; color: #fff; border-radius: 4px; padding: 2px 8px; font-size: 12px; white-space: nowrap; }
+  .src-link { color: #1a5fb4; text-decoration: none; font-size: 12px; border-bottom: 1px dashed #93c5fd; white-space: nowrap; }
+  .src-link:hover { color: #124a8f; }
+  .table-note { font-size: 12px; color: #8a94a6; margin: -6px 0 12px; }
+  /* ---------- 热词云 ---------- */
+  .hotword-box {
+    background: #f8f9fb;
+    border: 1px solid #e8eaf0;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin: 14px 0 4px;
+  }
+  .hotword-box .title { font-size: 12px; color: #6b7280; margin-bottom: 8px; }
+  .hotword-list { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; }
+  .hotword { color: #1a5fb4; line-height: 1.3; }
+  .hotword em { font-style: normal; font-size: 10px; color: #9ca3af; margin-left: 2px; }
+  .hotword.w1 { font-size: 20px; font-weight: 700; }
+  .hotword.w2 { font-size: 17px; font-weight: 600; color: #1e6fce; }
+  .hotword.w3 { font-size: 14px; color: #3b82f6; }
+  .hotword.w4 { font-size: 12px; color: #6b7280; }
+  /* ---------- 建议 ---------- */
+  .suggestion {
+    background: #f8f9fb;
+    border: 1px solid #e8eaf0;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    line-height: 1.8;
+  }
+  .suggestion b { color: #124a8f; }
+  /* ---------- 页脚 ---------- */
+  .footer {
+    text-align: center;
+    font-size: 12px;
+    color: #8a94a6;
+    padding: 20px 42px 24px;
+    border-top: 1px solid #e8eaf0;
+    background: #fafbfc;
+    line-height: 1.9;
+  }
+  .footer .fingerprint { font-family: Consolas, "Courier New", monospace; font-size: 11px; color: #a8b1bf; word-break: break-all; }
+  /* ---------- 响应式 ---------- */
+  @media (max-width: 760px) {
+    .content { padding: 22px 18px; }
+    .header { padding: 24px 20px 20px; }
+    .header h1 { font-size: 21px; }
+    .summary-cards { grid-template-columns: repeat(2, 1fr); }
+    .footer { padding: 16px 18px; }
+  }
+  @media print {
+    body { background: #fff; padding: 0; }
+    .report { box-shadow: none; border-radius: 0; max-width: none; }
+    .chart-wrap { height: 300px; }
+    h2 { break-after: avoid; }
+    .chart-box, table, .suggestion { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="report" id="report-root" data-report-id="{{REPORT_ID}}" data-report-version="{{REPORT_VERSION}}" data-stats-fingerprint="{{STATS_FINGERPRINT}}">
+
+  <!-- ===================== 报告头部 ===================== -->
+  <header class="header" id="report-header">
+    <div class="header-top">
+      <h1 id="report-title">{{TITLE}}</h1>
+      <span class="version-badge" id="report-version-badge">V{{REPORT_VERSION}} · {{REPORT_DATE}}</span>
+    </div>
+    <div class="meta" id="report-meta">{{META_LINE}}</div>
+    <div class="meta" id="report-scope">{{SCOPE_LINE}}</div>
+  </header>
+
+  {{DATA_WARNING}}
+
+  <div class="content">
+
+    <!-- ===================== 一、本期舆情总览 ===================== -->
+    <section id="section-overview" data-section="overview">
+      <h2>一、本周舆情总览</h2>
+      <div class="summary-cards" id="overview-cards">
+{{OVERVIEW_CARDS}}
+      </div>
+      <div class="insight" id="overview-insight"><b>一句话总结：</b>{{OVERVIEW_SUMMARY}}</div>
+      <div class="hotword-box" id="overview-hotwords">
+        <div class="title">本期高频热词（Top10）</div>
+        <div class="hotword-list">{{HOT_WORDS}}</div>
+      </div>
+    </section>
+
+    <!-- ===================== 二、声量趋势分析 ===================== -->
+    <section id="section-trend" data-section="trend">
+      <h2>二、声量趋势分析</h2>
+      <div class="chart-box">
+        <div class="chart-head-row">
+          <h3>📊 图表1：{{TREND_CHART_TITLE}}</h3>
+          <div class="chart-tools">
+            <span class="chart-hint" id="trend-view-hint"></span>
+            <button type="button" class="chart-tool-btn" id="trend-reset" title="恢复全部日期">显示全部</button>
+          </div>
+        </div>
+        <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
+      </div>
+      <div class="insight" id="trend-insight"><b>趋势解读：</b>{{TREND_INSIGHT}}</div>
+    </section>
+
+    <!-- ===================== 三、情感比例分布 ===================== -->
+    <section id="section-sentiment" data-section="sentiment">
+      <h2>三、情感比例分布</h2>
+      <div class="chart-box">
+        <h3>🥧 图表2：情感比例分布（全量样本 {{SENTIMENT_TOTAL}} 条）</h3>
+        <div class="chart-wrap"><canvas id="sentimentChart"></canvas></div>
+      </div>
+      <div class="table-wrap">
+        <table id="sentiment-table">
+          <thead><tr><th style="width:16%">平台</th><th>正面</th><th>中性</th><th>负面</th><th>合计</th><th>负面占比</th></tr></thead>
+          <tbody>
+{{SENTIMENT_TABLE}}
+          </tbody>
+        </table>
+      </div>
+      <div class="insight" id="sentiment-insight"><b>情感解读：</b>{{SENTIMENT_INSIGHT}}</div>
+    </section>
+
+    <!-- ===================== 四、重点负面舆情事件及处理进度 ===================== -->
+    <section id="section-negative" data-section="negative">
+      <h2>四、重点负面舆情事件及处理进度</h2>
+      <p class="ai-note" id="negative-intro">{{NEGATIVE_INTRO}}</p>
+      <div class="table-wrap">
+        <table id="negative-table">
+          <thead>
+            <tr>
+              <th style="width:5%">序号</th>
+              <th style="width:16%">事件名称</th>
+              <th style="width:8%">首发平台</th>
+              <th style="width:9%">首发时间</th>
+              <th style="width:13%">传播量（互动 / 热度分）</th>
+              <th style="width:18%">事件简述</th>
+              <th style="width:21%">处理建议</th>
+              <th style="width:10%">当前状态</th>
+            </tr>
+          </thead>
+          <tbody>
+{{NEGATIVE_TABLE}}
+          </tbody>
+        </table>
+      </div>
+      <div class="insight warn" id="negative-note"><b>状态说明：</b>{{NEGATIVE_NOTE}}</div>
+    </section>
+
+    <!-- ===================== 五、重点平台声量排名 ===================== -->
+    <section id="section-platform" data-section="platform">
+      <h2>五、重点平台声量排名</h2>
+      <div class="chart-box">
+        <h3>📈 图表3：各平台声量排名（内容 + 评论，按提及次数降序）</h3>
+        <div class="chart-wrap"><canvas id="platformChart"></canvas></div>
+      </div>
+      <div class="table-wrap">
+        <table id="platform-table">
+          <thead>
+            <tr>
+              <th style="width:6%">排名</th>
+              <th style="width:12%">平台</th>
+              <th style="width:11%">提及次数</th>
+              <th style="width:9%">占比</th>
+              <th style="width:13%">内容 / 评论</th>
+              <th style="width:12%">情感倾向</th>
+              <th>备注</th>
+            </tr>
+          </thead>
+          <tbody>
+{{PLATFORM_TABLE}}
+          </tbody>
+        </table>
+      </div>
+      <div class="insight" id="platform-insight"><b>平台洞察：</b>{{PLATFORM_INSIGHT}}</div>
+    </section>
+
+    <!-- ===================== 六、本周重点正面舆情 ===================== -->
+    <section id="section-positive" data-section="positive">
+      <h2>六、本周重点正面舆情</h2>
+      <p class="ai-note" id="positive-intro">{{POSITIVE_INTRO}}</p>
+      <div class="table-wrap">
+        <table id="positive-table">
+          <thead>
+            <tr>
+              <th style="width:5%">序号</th>
+              <th style="width:33%">内容 / 事件</th>
+              <th style="width:10%">发布平台</th>
+              <th style="width:14%">传播数据</th>
+              <th style="width:11%">是否值得跟进放大</th>
+              <th>跟进建议</th>
+            </tr>
+          </thead>
+          <tbody>
+{{POSITIVE_TABLE}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ===================== 七、下周关注重点与建议 ===================== -->
+    <section id="section-suggestions" data-section="suggestions">
+      <h2>七、下周关注重点与建议</h2>
+{{SUGGESTIONS}}
+      <div class="insight muted" id="suggestions-note">{{SUGGESTIONS_NOTE}}</div>
+    </section>
+
+  </div>
+
+  <!-- ===================== 页脚：生成信息 ===================== -->
+  <footer class="footer" id="report-footer">
+    <div>{{FOOTER_LINE_1}}</div>
+    <div>{{FOOTER_LINE_2}}</div>
+  </footer>
+</div>
+
+<!-- Chart.js v4.4.1 内联（MIT License，来源：本地 template 目录 chart.umd.min.js，sha256 见 docs） -->
+<script id="chartjs-inline">{{CHART_JS}}</script>
+<script id="chart-data">
+const reportData = {{REPORT_DATA_JSON}};
+</script>
+<script id="chart-init">
+(function () {
+  if (typeof Chart === 'undefined') {
+    console.error('[report] Chart.js 未加载，图表不可用');
+    return;
+  }
+  var FONT = '"Microsoft YaHei", "PingFang SC", sans-serif';
+  Chart.defaults.font.family = FONT;
+  Chart.defaults.color = '#4b5563';
+
+  var PALETTE = ['#1a5fb4', '#3584e4', '#62a0ea', '#99c1f1', '#c1d8f5', '#dbeafe', '#93c5fd', '#bfdbfe'];
+
+  // ============ 图表1：近 N 日声量趋势（平台堆叠柱 + 合计折线）============
+  var trendDatasets = reportData.trend.platforms.map(function (platform, idx) {
+    return {
+      type: 'bar',
+      label: platform,
+      data: reportData.trend.series[platform] || [],
+      backgroundColor: PALETTE[idx % PALETTE.length],
+      borderWidth: 0,
+      maxBarThickness: 26,
+      stack: 'volume'
+    };
+  });
+  trendDatasets.push({
+    type: 'line',
+    label: '当日合计',
+    data: reportData.trend.total,
+    borderColor: '#124a8f',
+    backgroundColor: 'rgba(18,74,143,0.08)',
+    borderWidth: 2,
+    pointRadius: 3,
+    pointBackgroundColor: '#124a8f',
+    pointBorderColor: '#fff',
+    pointBorderWidth: 1.5,
+    tension: 0.35,
+    fill: false,
+    order: 0
+  });
+  var trendLabelsAll = (reportData.trend.labels || []).slice();
+  var trendFullData = trendDatasets.map(function (ds) { return (ds.data || []).slice(); });
+  var trendMinSpan = 3;
+  // 日期越多，默认聚焦最近一段，避免 90 天标签挤在一起；可滚轮缩放/拖动平移/显示全部。
+  var trendWindow = { start: 0, end: Math.max(0, trendLabelsAll.length - 1) };
+  if (trendLabelsAll.length > 45) {
+    trendWindow.start = Math.max(0, trendLabelsAll.length - 30);
+  }
+  var trendChart = new Chart(document.getElementById('trendChart'), {
+    type: 'bar',
+    data: { labels: trendLabelsAll, datasets: trendDatasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 8, padding: 12, font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            footer: function (items) {
+              var total = items.reduce(function (sum, item) { return sum + (item.parsed.y || 0); }, 0);
+              return '合计（不含折线重复计数）：' + total + ' 条';
+            }
+          }
+        }
+      },
+      scales: {
+        y: { beginAtZero: true, stacked: true, grid: { color: '#eef0f4' }, title: { display: true, text: '声量（条）' }, ticks: { precision: 0 } },
+        x: {
+          stacked: true, grid: { display: false },
+          ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 12, font: { size: 10 } }
+        }
+      }
+    }
+  });
+
+  var trendCanvas = document.getElementById('trendChart');
+  var trendHint = document.getElementById('trend-view-hint');
+  var trendReset = document.getElementById('trend-reset');
+
+  function clampTrendWindow(start, end) {
+    var total = trendLabelsAll.length;
+    if (!total) return { start: 0, end: 0 };
+    var span = Math.max(trendMinSpan, Math.min(total, end - start + 1));
+    start = Math.max(0, Math.min(total - span, start));
+    return { start: start, end: start + span - 1 };
+  }
+
+  function applyTrendWindow(start, end) {
+    var total = trendLabelsAll.length;
+    if (!total || !trendChart) return;
+    var next = clampTrendWindow(start, end);
+    var span = next.end - next.start + 1;
+    trendWindow = next;
+    trendChart.data.labels = trendLabelsAll.slice(next.start, next.end + 1);
+    trendChart.data.datasets.forEach(function (dataset, index) {
+      dataset.data = trendFullData[index].slice(next.start, next.end + 1);
+    });
+    trendChart.options.scales.x.ticks.maxTicksLimit = span > 30 ? 10 : (span > 14 ? 12 : 14);
+    trendChart.update('none');
+    if (trendHint) {
+      trendHint.textContent = '显示：' + (trendLabelsAll[next.start] || '') + ' ~ ' +
+        (trendLabelsAll[next.end] || '') + '（' + span + ' 天）· 滚轮缩放 / 拖动平移';
+    }
+  }
+
+  function resetTrendWindow() {
+    applyTrendWindow(0, trendLabelsAll.length - 1);
+  }
+
+  if (trendLabelsAll.length > 45) {
+    applyTrendWindow(trendWindow.start, trendWindow.end);
+  } else {
+    applyTrendWindow(0, trendLabelsAll.length - 1);
+  }
+
+  if (trendCanvas) {
+    trendCanvas.addEventListener('wheel', function (event) {
+      if (trendLabelsAll.length <= trendMinSpan) return;
+      event.preventDefault();
+      var span = trendWindow.end - trendWindow.start + 1;
+      var factor = event.deltaY < 0 ? 0.8 : 1.25;
+      var nextSpan = Math.max(trendMinSpan, Math.min(trendLabelsAll.length, Math.round(span * factor)));
+      if (nextSpan === span) return;
+      var rect = trendCanvas.getBoundingClientRect();
+      var ratio = rect.width ? Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) : 0.5;
+      var anchor = trendWindow.start + Math.round(ratio * (span - 1));
+      var nextStart = anchor - Math.round((anchor - trendWindow.start) * nextSpan / span);
+      applyTrendWindow(nextStart, nextStart + nextSpan - 1);
+    }, { passive: false });
+
+    var dragState = null;
+    trendCanvas.style.cursor = 'grab';
+    trendCanvas.addEventListener('pointerdown', function (event) {
+      if (trendLabelsAll.length <= trendMinSpan) return;
+      dragState = {
+        x: event.clientX,
+        start: trendWindow.start,
+        end: trendWindow.end,
+        width: Math.max(1, trendCanvas.getBoundingClientRect().width)
+      };
+      trendCanvas.style.cursor = 'grabbing';
+      if (trendCanvas.setPointerCapture) {
+        try { trendCanvas.setPointerCapture(event.pointerId); } catch (err) { /* ignore */ }
+      }
+    });
+    trendCanvas.addEventListener('pointermove', function (event) {
+      if (!dragState) return;
+      event.preventDefault();
+      var span = dragState.end - dragState.start + 1;
+      var shift = Math.round((dragState.x - event.clientX) / dragState.width * span);
+      applyTrendWindow(dragState.start + shift, dragState.end + shift);
+    });
+    function endTrendDrag() {
+      dragState = null;
+      trendCanvas.style.cursor = 'grab';
+    }
+    trendCanvas.addEventListener('pointerup', endTrendDrag);
+    trendCanvas.addEventListener('pointercancel', endTrendDrag);
+    trendCanvas.addEventListener('dblclick', resetTrendWindow);
+  }
+  if (trendReset) {
+    trendReset.addEventListener('click', resetTrendWindow);
+  }
+
+  // ============ 图表2：情感比例环形图（中心显示总量）============
+  var centerTextPlugin = {
+    id: 'centerText',
+    afterDraw: function (chart) {
+      var meta = chart.getDatasetMeta(0);
+      if (!meta || !meta.data || !meta.data.length) return;
+      var ctx = chart.ctx;
+      var x = meta.data[0].x;
+      var y = meta.data[0].y;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#124a8f';
+      ctx.font = '700 26px "Microsoft YaHei", sans-serif';
+      ctx.fillText(reportData.sentiment.centerValue, x, y - 8);
+      ctx.fillStyle = '#8a94a6';
+      ctx.font = '12px "Microsoft YaHei", sans-serif';
+      ctx.fillText(reportData.sentiment.centerLabel, x, y + 16);
+      ctx.restore();
+    }
+  };
+  new Chart(document.getElementById('sentimentChart'), {
+    type: 'doughnut',
+    data: {
+      labels: reportData.sentiment.labels,
+      datasets: [{
+        data: reportData.sentiment.values,
+        backgroundColor: ['#16a34a', '#94a3b8', '#dc2626'],
+        borderColor: '#ffffff',
+        borderWidth: 3,
+        hoverOffset: 8
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '58%',
+      plugins: {
+        legend: { position: 'right', labels: { usePointStyle: true, boxWidth: 8, padding: 18, font: { size: 13 } } },
+        tooltip: {
+          callbacks: {
+            label: function (ctx) {
+              var count = reportData.sentiment.counts[ctx.dataIndex];
+              return ' ' + ctx.label + '：' + ctx.parsed + '%（' + count + ' 条）';
+            }
+          }
+        }
+      }
+    },
+    plugins: [centerTextPlugin]
+  });
+
+  // ============ 图表3：平台声量横向条形图 ============
+  new Chart(document.getElementById('platformChart'), {
+    type: 'bar',
+    data: {
+      labels: reportData.platform.names,
+      datasets: [{
+        label: '提及次数',
+        data: reportData.platform.counts,
+        backgroundColor: ['#124a8f', '#1a5fb4', '#3584e4', '#62a0ea', '#93c5fd', '#c1d8f5'],
+        borderRadius: 6,
+        maxBarThickness: 34
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: function (ctx) {
+              var total = reportData.platform.counts.reduce(function (a, b) { return a + b; }, 0);
+              var pct = total ? (ctx.parsed.x / total * 100).toFixed(1) : '0.0';
+              return ' ' + ctx.parsed.x + ' 次（占比 ' + pct + '%）';
+            }
+          }
+        }
+      },
+      scales: {
+        x: { beginAtZero: true, grid: { color: '#eef0f4' }, title: { display: true, text: '提及次数（内容 + 评论）' } },
+        y: { grid: { display: false } }
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>

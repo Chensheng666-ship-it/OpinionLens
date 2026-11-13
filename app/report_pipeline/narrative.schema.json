@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://opinionlens.local/schemas/public-sentiment-narrative.schema.json",
+  "title": "舆情周报叙述层 narrative.json",
+  "description": "模型/本地规则只负责写作的叙述结构。所有数字必须来自 stats.json，渲染器用本文件填充模板文字区。",
+  "type": "object",
+  "required": ["schema_version", "overview", "trend", "sentiment", "platform", "negative", "positive", "suggestions", "suggestions_note", "risk", "disclaimer"],
+  "properties": {
+    "schema_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+    "generated_by": {"type": "string", "description": "local-rules / mock / feishang / openai-compatible"},
+    "model": {"type": "string"},
+    "generated_at": {"type": "string"},
+    "overview": {
+      "type": "object",
+      "required": ["headline", "one_line_summary", "scope_note"],
+      "properties": {
+        "headline": {"type": "string", "description": "一句话标题，如“负面以历史存量为主，整体风险可控”"},
+        "one_line_summary": {"type": "string", "description": "总览段落（第一章 insight）"},
+        "scope_note": {"type": "string", "description": "数据口径说明（页眉第二行）"}
+      }
+    },
+    "trend": {
+      "type": "object",
+      "required": ["insight"],
+      "properties": {"insight": {"type": "string"}}
+    },
+    "sentiment": {
+      "type": "object",
+      "required": ["insight"],
+      "properties": {"insight": {"type": "string"}}
+    },
+    "platform": {
+      "type": "object",
+      "required": ["insight"],
+      "properties": {"insight": {"type": "string"}}
+    },
+    "negative": {
+      "type": "object",
+      "required": ["intro", "note", "measures"],
+      "properties": {
+        "intro": {"type": "string", "description": "第四章表格前说明"},
+        "note": {"type": "string", "description": "状态说明 + POC 口径说明"},
+        "measures": {
+          "type": "array",
+          "description": "与 stats.negative_events 一一对应（event_id 对齐）",
+          "items": {
+            "type": "object",
+            "required": ["event_id", "measure", "status"],
+            "properties": {
+              "event_id": {"type": "string", "pattern": "^NEG-[0-9]{2}$"},
+              "measure": {"type": "string", "description": "处理建议（可写建议，不得虚构已处理事实）"},
+              "status": {"type": "string", "description": "必须与 stats.handling_status 一致"}
+            }
+          }
+        }
+      }
+    },
+    "positive": {
+      "type": "object",
+      "required": ["intro", "follow_ups"],
+      "properties": {
+        "intro": {"type": "string"},
+        "follow_ups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["event_id", "follow_up", "worth_amplifying"],
+            "properties": {
+              "event_id": {"type": "string", "pattern": "^POS-[0-9]{2}$"},
+              "follow_up": {"type": "string"},
+              "worth_amplifying": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    },
+    "suggestions": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 8,
+      "items": {"type": "string"}
+    },
+    "suggestions_note": {"type": "string"},
+    "risk": {
+      "type": "object",
+      "required": ["level", "assessment"],
+      "properties": {
+        "level": {"type": "string", "enum": ["低", "中", "高"]},
+        "assessment": {"type": "string"}
+      }
+    },
+    "disclaimer": {"type": "string"}
+  }
+}

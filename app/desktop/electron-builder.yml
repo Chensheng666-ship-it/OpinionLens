@@ -1,0 +1,92 @@
+# =============================================================================
+# 舆见 OpinionLens — electron-builder 配置（Windows x64 / NSIS，开源版）
+# -----------------------------------------------------------------------------
+# 运行目录：app/desktop（package.json 同层）
+# 构建命令：pwsh -File app/scripts/build_installer.ps1
+# 产物目录：build/installer/output/（安装包 + win-unpacked）
+#
+# 资源来源：app/scripts/build_pack_resources.ps1 生成
+#   build/installer/resources/{runtime,sidecar,engine,MediaCrawler,LICENSES,config,build-info.json}
+# 这些内容会原样复制到安装目录的 resources/ 下（保持同名结构），
+# 与 main.js 的 app.isPackaged 路径约定一致：
+#   resources/runtime/python/python.exe   → MC_PYTHON
+#   resources/sidecar/main.py             → SIDECAR_ENTRY
+#   resources/MediaCrawler                → MC_ROOT
+#
+# 说明：当前版本不签名、不接自动更新；应用图标使用 OpinionLens 标识。正式发布前需配置代码签名证书。
+# =============================================================================
+
+appId: com.opinionlens.desktop
+productName: 舆见 OpinionLens
+copyright: Copyright © 2026 OpinionLens Contributors
+
+directories:
+  output: ../../build/installer/output
+
+# app.asar 只装 Electron 侧代码；运行时依赖全部走 extraResources。
+files:
+  - main.js
+  - preload.js
+  - renderer/**/*
+  - package.json
+  - "!**/*.map"
+
+asar: true
+# Node 侧无原生模块，跳过 rebuild 可显著加快构建。
+npmRebuild: false
+
+# 当前版本采用 normal 压缩以缩短构建时间；如需更小安装包可改 maximum（构建更慢）。
+compression: normal
+# 只保留实际用到的 3 种 Electron 语言包。
+electronLanguages:
+  - zh-CN
+  - zh-TW
+  - en-US
+
+# 把 staging resources/ 整体复制到安装目录 resources/ 根下（保持子目录结构）。
+extraResources:
+  - from: ../../build/installer/resources
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
+      - "!**/*.pyc"
+      - "!**/.git/**"
+      - "!**/node_modules/**"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # 可执行文件名使用 ASCII，避免中文路径/快捷方式兼容问题；产品名仍显示中文。
+  executableName: OpinionLens
+  # Windows EXE/快捷方式/安装包图标（舆见内部标识）
+  icon: renderer/assets/app-icon.ico
+  requestedExecutionLevel: asInvoker
+  artifactName: OpinionLens-Setup-${version}.${ext}
+  signAndEditExecutable: true
+
+nsis:
+  # assisted installer：用户可选安装目录；per-user 默认，无需管理员权限。
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  selectPerMachineByDefault: false
+  # 快捷方式与卸载项
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 舆见 OpinionLens
+  uninstallDisplayName: 舆见 OpinionLens
+  # 卸载保留用户数据（%APPDATA%\OpinionLens）
+  deleteAppDataOnUninstall: false
+  runAfterFinish: true
+  # 修复部分机器升级安装时误判 App 仍在运行（见 nsis-custom.nsh）
+  include: nsis-custom.nsh
+  language: "2052"
+  multiLanguageInstaller: false
+  # 当前版本不接自动更新，关闭差量包以精简产物。
+  differentialPackage: false
+  artifactName: OpinionLens-Setup-${version}.${ext}
+
+# 不配置 publish（构建时统一 --publish never），避免意外生成更新清单。

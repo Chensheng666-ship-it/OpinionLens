@@ -1,0 +1,22 @@
+{
+  "name": "opinionlens-desktop",
+  "productName": "舆见 OpinionLens",
+  "private": true,
+  "version": "0.1.0",
+  "description": "舆见 OpinionLens — 社媒舆情采集与 AI 周报桌面端",
+  "author": "OpinionLens Contributors",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "start:no-sidecar": "electron . --no-sidecar",
+    "shot": "electron . --screenshot ../data/logs/ui_selftest.png",
+    "dist:win": "electron-builder --win nsis --x64 --publish never",
+    "pack:dir": "electron-builder --dir"
+  },
+  "devDependencies": {
+    "electron": "45.2.3",
+    "electron-builder": "26.18.0"
+  }
+}
