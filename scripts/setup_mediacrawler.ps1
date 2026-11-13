@@ -15,11 +15,20 @@
 #     不修改其源码，因此这里只需上游原版源码 + 依赖环境。
 #   - 默认使用系统 Edge（channel=msedge），无需 playwright install chromium。
 #   - 需要代理时，请先设置 HTTPS_PROXY / ALL_PROXY 环境变量。
+#   - 目录固定为 <仓库根>\MediaCrawler：app/scripts/dev.ps1、app/scripts/run_sidecar.ps1、
+#     app/desktop/main.js 都硬编码了 MediaCrawler\.venv\Scripts\python.exe（这个 venv
+#     同时是 sidecar 的 Python 运行时），不要改名或挪位置（可用 MC_PYTHON / MC_ROOT 覆盖）。
+#   - 上游 pyproject.toml 把默认索引钉死为清华源，实测部分 wheel 会返回 403；
+#     因此 uv sync 失败时会自动依次改用 -FallbackIndexes 中的索引重试。
 # ============================================================================
 [CmdletBinding()]
 param(
     [string]$Ref = 'b059657a872614bc0cb887af801b753ff4587d12',
-    [string]$RepoUrl = 'https://github.com/NanmiCoder/MediaCrawler.git'
+    [string]$RepoUrl = 'https://github.com/NanmiCoder/MediaCrawler.git',
+    [string[]]$FallbackIndexes = @(
+        'https://mirrors.aliyun.com/pypi/simple',
+        'https://pypi.org/simple'
+    )
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,9 +55,25 @@ if ($LASTEXITCODE -ne 0) { throw "git checkout $Ref 失败（上游可能已改�
 
 Write-Host '[2/3] uv sync 安装依赖（首次约 3-5 分钟）...' -ForegroundColor Cyan
 Push-Location $target
+$usedIndex = '(上游默认索引)'
 try {
+    $syncOk = $false
     uv sync
-    if ($LASTEXITCODE -ne 0) { throw 'uv sync 失败' }
+    if ($LASTEXITCODE -eq 0) {
+        $syncOk = $true
+    }
+    else {
+        # 上游默认索引 = 清华源，实测对部分 wheel 返回 403 Forbidden。
+        foreach ($index in $FallbackIndexes) {
+            Write-Host "  uv sync 失败（exit $LASTEXITCODE），改用索引重试：$index" -ForegroundColor Yellow
+            uv sync --default-index $index
+            if ($LASTEXITCODE -eq 0) { $syncOk = $true; $usedIndex = $index; break }
+        }
+    }
+    if (-not $syncOk) {
+        throw ("uv sync 失败（已尝试上游默认索引与备用索引：{0}）。" -f ($FallbackIndexes -join ', ')) +
+              "请检查网络/代理，或手动执行：cd `"$target`"; uv sync --default-index <可用索引>"
+    }
 }
 finally {
     Pop-Location
@@ -66,7 +91,10 @@ Write-Host ''
 Write-Host '完成。引擎已安装到：' -ForegroundColor Green
 Write-Host "  $target"
 Write-Host "Python 解释器：$python"
+Write-Host "依赖索引：$usedIndex"
 Write-Host ''
 Write-Host '下一步：' -ForegroundColor Yellow
 Write-Host '  cd app\desktop; npm install; cd ..\..'
+Write-Host '  # 若 node_modules\electron\dist\electron.exe 不存在，补一次：'
+Write-Host '  #   cd app\desktop; node .\node_modules\electron\install.js'
 Write-Host '  .\app\scripts\dev.ps1'

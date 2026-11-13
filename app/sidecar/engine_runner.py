@@ -43,10 +43,9 @@ if str(_SELF_DIR) not in sys.path:
 
 from state import StateStore, now_ts  # noqa: E402  (本地模块，需先修 sys.path)
 from events import bus  # noqa: E402  (进程内事件总线：run.* / account.* 通知事件)
+from version import APP_VERSION as SIDECAR_VERSION  # noqa: E402  (版本号唯一来源)
 
 log = logging.getLogger("sidecar.engine")
-
-SIDECAR_VERSION = "0.6.0"
 
 SIDECAR_DIR = Path(__file__).resolve().parent
 APP_DIR = SIDECAR_DIR.parent

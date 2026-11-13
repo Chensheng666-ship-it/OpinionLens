@@ -47,8 +47,14 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+# 版本号唯一来源（同目录 ``version.py``）：主进程通过 ``FS_APP_VERSION`` 注入，
+# 缺失时回退 ``FALLBACK_VERSION``；不要在此硬编码版本字符串。
+_SELF_DIR = Path(__file__).resolve().parent
+if str(_SELF_DIR) not in sys.path:
+    sys.path.insert(0, str(_SELF_DIR))
+from version import APP_VERSION  # noqa: E402
+
 SCHEMA_VERSION = "public-sentiment-data@v1"
-APP_VERSION = "0.3.0"
 DB_SCHEMA = "media_crawler@2026-11"
 TIMEZONE = "Asia/Shanghai"
 TZ = timezone(timedelta(hours=8))

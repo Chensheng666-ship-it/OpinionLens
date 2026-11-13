@@ -2,6 +2,31 @@
 
 本项目自开源基线 0.1.0 起按版本记录变更。
 
+## 0.3.0 · 2026-11-13（版本号统一 · 安装链路加固）
+
+**版本号唯一来源（修复界面/报告/包版本三处不一致）**
+- 新增 `app/sidecar/version.py`：`FALLBACK_VERSION = "0.3.0"` + `app_version()`，优先读主进程注入的
+  `FS_APP_VERSION`（= `app/desktop/package.json` 的 `version`），缺失时回退。
+- `app/sidecar/engine_runner.py`：`SIDECAR_VERSION` 由硬编码 `"0.6.0"` 改为引用 `version.APP_VERSION`
+  （`/api/system`、`/health` 回报的版本随之统一）。
+- `app/sidecar/report_data.py`：`APP_VERSION` 由硬编码 `"0.3.0"` 改为引用同一模块。
+- `app/desktop/package.json` / `package-lock.json`：`0.2.2 → 0.3.0`。
+- `app/desktop/renderer/app.js`：静态预览兜底 `FS.APP_VERSION` `0.1.0 → 0.3.0`。
+- 自测新增断言「sidecar 回退版本 == package.json version」，防止再次漂移。
+
+**安装链路**
+- `scripts/setup_mediacrawler.ps1`：`uv sync` 失败（上游默认清华源对部分 wheel 返回 403）时，
+  自动按 `-FallbackIndexes`（阿里云 → PyPI 官方）重试，并输出最终使用的索引；
+  全部失败时给出可复制的修复命令。脚本头补充「MediaCrawler 目录固定位置」说明。
+- `app/sidecar/selftest.py`：`_craft_interrupted_run()` 对 WAL 库建连增加有限次退避重试，
+  消除 `taskkill /F` 后 `-wal/-shm` 未释放导致的 `disk I/O error` 假红（生产逻辑不变）。
+
+**文档**
+- `README.md`：快速开始补「MediaCrawler 装在哪、为何不能改名/挪位」、三条实测安装坑与处理方式；
+  FAQ 同步；文档索引新增安装文档。
+- 新增 `docs/安装与启动_从零开始.md`：从依赖检查到「服务在线」的手把手步骤、验证命令、排查清单。
+- `docs/常用命令_构建运行自测.md`：补充 `uv sync` 备用索引用法。
+
 ## 0.2.2 · 2026-11-13（界面体验与报告口径修复）
 
 **界面**

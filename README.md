@@ -12,7 +12,7 @@
 [![CI](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml)
 [![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](app/desktop/package.json)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](app/sidecar/README.md)
-[![Release](https://img.shields.io/badge/release-0.2.2-blue)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.3.0-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 </div>
@@ -220,6 +220,23 @@ cd ..\..
 启动后窗口右上角出现「服务在线」即就绪（首次启动 sidecar 约 2–4 秒）。
 AI 报告为可选能力：未配置模型/AI 服务时报告自动使用本地模板生成（状态 `degraded`）。
 
+> **采集引擎装在哪：仓库根目录的 `MediaCrawler\`，名字和位置都不能改。**
+> `app/scripts/dev.ps1`、`app/scripts/run_sidecar.ps1`、`app/desktop/main.js` 三处硬编码了
+> `MediaCrawler\.venv\Scripts\python.exe`——**这个 venv 同时是 sidecar 的 Python 运行时**，
+> 装到别处、改目录名、或在别的环境单独 `pip install` 都跑不通（可用 `MC_PYTHON` / `MC_ROOT`
+> 环境变量覆盖，但默认路径必须存在）。仓库不随附其源码（非商业学习许可）。
+
+### 安装三个已知坑（实测）
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `setup_mediacrawler.ps1` 报 `uv sync 失败`，日志含 `403 Forbidden`（`pygments` / `fonttools` 等） | 上游 `pyproject.toml` 把默认索引钉成清华源，部分 wheel 返回 403 | 脚本已自动切换备用索引重试；仍失败时手动 `cd MediaCrawler; uv sync --default-index https://mirrors.aliyun.com/pypi/simple` |
+| `npm install` 成功，但启动报 `Electron failed to install correctly` | Electron 本体（`node_modules\electron\dist\electron.exe`）未随 postinstall 下载 | `cd app\desktop; $env:ELECTRON_MIRROR='https://npmmirror.com/mirrors/electron/'; node .\node_modules\electron\install.js` |
+| 窗口一闪而过 | 多为**已有实例在跑**（Electron 单实例锁），或 sidecar 起不来 | 先 `Get-Process electron,OpinionLens \| Stop-Process -Force`；再看 `app\data\logs\main.log` 与 `sidecar.log` |
+
+完整的手把手步骤（每步验证命令、selftest 已知差异、排查清单）见
+[`docs/安装与启动_从零开始.md`](docs/安装与启动_从零开始.md)。
+
 ### 常用命令
 
 ```powershell
@@ -284,6 +301,7 @@ cd app\desktop; npm run start:no-sidecar
 | [`app/CONTRACT.md`](app/CONTRACT.md) | 开发契约：Engine 事件协议、Sidecar API、Exporter 契约 |
 | [`app/sidecar/README.md`](app/sidecar/README.md) | 本地服务（FastAPI）接口、环境变量、自测 |
 | [`docs/常用命令_构建运行自测.md`](docs/常用命令_构建运行自测.md) | 开发、自测、构建常用命令清单 |
+| [`docs/安装与启动_从零开始.md`](docs/安装与启动_从零开始.md) | 从零安装到「服务在线」的手把手步骤、已知坑与排查 |
 | [`docs/打包与安装包_构建说明.md`](docs/打包与安装包_构建说明.md) | 安装包产物、构建步骤、验证清单与已知限制 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 版本变更记录 |
 | [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) | 第三方组件与许可证 |
@@ -292,7 +310,9 @@ cd app\desktop; npm run start:no-sidecar
 
 **Q：为什么仓库里没有 `MediaCrawler/` 目录？**
 A：MediaCrawler 为第三方开源项目（非商业学习许可），本仓库不随附其源码。运行 `scripts/setup_mediacrawler.ps1`
-会克隆固定 commit 并安装依赖；升级/重装按脚本提示操作。
+会**克隆固定 commit 到仓库根目录的 `MediaCrawler\`** 并执行 `uv sync` 生成 `.venv`；该路径被启动脚本与主进程
+硬编码引用（同时是 sidecar 的 Python 运行时），因此**不能改名或挪位置**。升级/重装按脚本提示操作
+（重装前先删除该目录，注意其中可能有登录态）。
 
 **Q：AI 报告需要什么？需要付费吗？**
 A：报告统计与本地模板渲染完全离线可用，不需要任何外部服务。若需要 AI 叙述，可在「设置 → 模型 API」

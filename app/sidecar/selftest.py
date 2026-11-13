@@ -2004,9 +2004,26 @@ def phase1(ctx: Ctx) -> Dict[str, Any]:
 # Phase 2：重启恢复 + 导出链路（_fake_exporter）
 # ---------------------------------------------------------------------------
 def _craft_interrupted_run(data_dir: Path) -> str:
+    """构造一条「上次 sidecar 崩溃残留的 running 任务」。
+
+    上一次 sidecar 是被 ``taskkill /F /T`` 强杀的：Windows 下 ``-wal``/``-shm`` 的句柄与共享内存
+    映射释放有延迟，紧接着用新连接把同一份库切到 WAL 会偶发
+    ``sqlite3.OperationalError: disk I/O error``（同一份库事后单独打开完全正常，
+    ``PRAGMA integrity_check`` 也是 ok）。因此建连做有限次退避重试，避免自测假红。
+    """
     import state as state_mod
 
-    store = state_mod.StateStore(data_dir / "app.db")
+    store = None
+    last_exc: Optional[BaseException] = None
+    for attempt in range(5):
+        try:
+            store = state_mod.StateStore(data_dir / "app.db")
+            break
+        except sqlite3.OperationalError as exc:  # 仅这一类别重试：强杀后 WAL/SHM 尚未释放
+            last_exc = exc
+            time.sleep(0.2 * (attempt + 1))
+    if store is None:
+        raise last_exc if last_exc is not None else RuntimeError("StateStore 打开失败")
     try:
         run_id = "run_interrupted_selftest"
         started_ts = int(time.time())
@@ -2407,6 +2424,28 @@ def _phase2_env() -> Dict[str, str]:
     }
 
 
+def _check_versions(report: "Report") -> None:
+    """版本号一致性：``version.FALLBACK_VERSION`` 必须等于 ``app/desktop/package.json`` 的 version。
+
+    历史上版本号散落在多处（sidecar ``0.6.0`` / 报告管线 ``0.3.0`` / 渲染层兜底 ``0.1.0``），
+    界面显示的版本和 package.json 对不上。现在唯一来源是 package.json（主进程通过
+    ``FS_APP_VERSION`` 注入 sidecar），本断言防止回退值再次漂移。
+    """
+    import version as version_mod
+
+    try:
+        pkg = PROJECT_ROOT / "app" / "desktop" / "package.json"
+        pkg_version = json.loads(pkg.read_text(encoding="utf-8")).get("version", "")
+    except Exception as exc:  # noqa: BLE001
+        report.check("版本号一致性：可读取 app/desktop/package.json", False, repr(exc))
+        return
+    report.check(
+        "版本号一致性：sidecar 回退版本 == package.json version",
+        version_mod.FALLBACK_VERSION == pkg_version,
+        f"package.json={pkg_version} / fallback={version_mod.FALLBACK_VERSION}（改版本号需同步这两处）",
+    )
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     for _stream in (sys.stdout, sys.stderr):
         try:  # Windows 控制台默认 GBK，统一 UTF-8 防止中文/符号打印异常
@@ -2416,6 +2455,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     python = args.python or sys.executable
     report = Report()
+    _check_versions(report)
     data_dir = Path(tempfile.mkdtemp(prefix="sidecar_selftest_")).resolve()
     if args.simulate_missing_exporter:
         real_exporter = False

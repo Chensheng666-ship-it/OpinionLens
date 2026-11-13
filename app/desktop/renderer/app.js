@@ -9,7 +9,9 @@
 
   var FS = window.FS = window.FS || {};
   FS.views = FS.views || {};
-  FS.APP_VERSION = '0.1.0';
+  // 静态预览（无 preload / 无 sidecar）时的兜底版本号。
+  // 真实版本号来自 sidecar /api/system 的 version（package.json → FS_APP_VERSION）。
+  FS.APP_VERSION = '0.3.0';
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
