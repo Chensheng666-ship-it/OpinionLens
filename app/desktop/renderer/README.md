@@ -129,7 +129,7 @@ URL 参数演示 404 降级（后端未接线场景）：
 
 ## 截图
 
-对外演示截图位于仓库根目录 `docs/preview/`（`07*` 为设计改版前历史图，本次新增）：
+对外演示截图位于仓库根目录 `docs/preview/`（深海青品牌主题）：
 
 | 文件 | 内容 |
 | --- | --- |
@@ -139,12 +139,12 @@ URL 参数演示 404 降级（后端未接线场景）：
 | `80_tasks_account_policy.png` | 采集任务 · 账号策略（自动选号/指定账号） |
 | `81_settings_account_pool.png` | 设置 · 账号池（策略/限额/旧目录迁移） |
 | `82_settings_about.png` | 设置 · 关于（版本/数据目录/MIT/免责声明） |
-| `83_accounts_login_qr.png` | 扫码登录弹窗（应用内二维码） |
-| `84_accounts_create_modal.png` | 新增账号弹窗 |
-| `85_tasks_account_manual.png` | 采集任务 · 指定账号模式 |
-| `86_tasks_run_accounts.png` | 运行详情 · 账号策略标签 |
-| `87~94_real_*.png` | 真实 sidecar 联调截图（模型 API CRUD、通知规则/通道、账号池 legacy、任务策略、报告中心） |
-| `95_tasks_run_platform_accounts.png` | 运行详情 · 分平台进度账号别名 / 切号记录 |
+| `96_real_settings_model_api.png` | 真实应用 · 设置（模型 API，真实 sidecar） |
+| `96b_real_accounts.png` | 真实应用 · 平台账号（legacy 账号兼容） |
+| `96b_real_tasks.png` | 真实应用 · 采集任务 |
+| `97_real_settings_notify.png` | 真实应用 · 设置（通知推送） |
+| `98_real_settings_pool.png` | 真实应用 · 设置（账号池策略） |
+| `99_real_reports.png` | 真实应用 · 报告中心 |
 
 ## 已知简化
 

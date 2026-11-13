@@ -9,7 +9,7 @@
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4?logo=windows&logoColor=white)](#快速开始)
 [![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](app/desktop/package.json)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](app/sidecar/README.md)
-[![Release](https://img.shields.io/badge/release-0.2.0-blue)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.2.1-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 </div>
@@ -95,7 +95,11 @@
 |---|---|
 | ![真实应用账号页](docs/preview/96b_real_accounts.png) | ![真实应用设置页](docs/preview/96_real_settings_model_api.png) |
 
-> 前两行为本地预览模式联调截图（数据均模拟）；最后一行为 Electron 真实应用 + 本地 sidecar 截图
+| 真实应用 · 通知推送 | 真实应用 · 报告中心 |
+|---|---|
+| ![真实应用通知设置](docs/preview/97_real_settings_notify.png) | ![真实应用报告中心](docs/preview/99_real_reports.png) |
+
+> 前两行为本地预览模式联调截图（数据均模拟）；后两行为 Electron 真实应用 + 本地 sidecar 截图
 > （使用本机既有测试数据）。截图不含真实账号、Cookie 与密钥。
 
 ## 系统架构
