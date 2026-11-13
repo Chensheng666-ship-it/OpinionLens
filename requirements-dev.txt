@@ -1,0 +1,19 @@
+# 离线测试 / CI 依赖（Windows 开发推荐仍使用 MediaCrawler\.venv）
+#
+# 用途：
+#   - GitHub Actions（.github/workflows/ci.yml）安装这些依赖后跑离线自测；
+#   - 想用任意 Python 3.11+ 环境跑 sidecar 测试时可 `pip install -r requirements-dev.txt`。
+#
+# 注意：
+#   - 采集引擎（app/engine/test_engine.py、真实采集）需要 MediaCrawler 及其依赖，
+#     请运行 scripts/setup_mediacrawler.ps1 安装（非商业学习许可，仓库不随附源码）。
+#   - 这些依赖只覆盖「离线测试 + sidecar + 报告统计/渲染」，不包含 Playwright/采集引擎。
+
+fastapi>=0.110
+uvicorn>=0.27
+httpx>=0.27
+pydantic>=2.5
+openpyxl>=3.1
+pandas>=2.0
+jieba>=0.42
+Pillow>=10.0

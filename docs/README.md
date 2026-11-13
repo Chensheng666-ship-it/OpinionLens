@@ -20,6 +20,8 @@
 |---|---|
 | [`常用命令_构建运行自测.md`](常用命令_构建运行自测.md) | 开发、自测、打包资源、构建安装包、清理命令清单与重要路径 |
 | [`打包与安装包_构建说明.md`](打包与安装包_构建说明.md) | 安装包产物、构建步骤、验证清单、常见构建/安装问题与已知限制 |
+| [`../requirements-dev.txt`](../requirements-dev.txt) | 离线测试 / CI 所需 Python 依赖 |
+| [`../.github/workflows/ci.yml`](../.github/workflows/ci.yml) | GitHub Actions 离线 CI（compileall + node --check + 5 个测试套件 + selftest） |
 
 ## 3. 协议与版本
 

@@ -9,6 +9,7 @@
 扫码登录 → 关键词采集（内容 + 评论）→ Excel 数据交付 → AI 舆情报告，一站式完成。
 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D4?logo=windows&logoColor=white)](#快速开始)
+[![CI](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml)
 [![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](app/desktop/package.json)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](app/sidecar/README.md)
 [![Release](https://img.shields.io/badge/release-0.2.1-blue)](CHANGELOG.md)
@@ -66,6 +67,7 @@
 - **一键开发启动**：`app/scripts/dev.ps1` 拉起 Electron，Electron 自动托管 Python sidecar；
 - **Windows 安装包**：electron-builder 生成 NSIS 安装包（per-user 安装、免管理员、内置便携 Python 运行时）；
 - **离线自测**：engine / exporter / report / sidecar / Electron 截图多组断言，跑 `selftest.ps1` 即可回归；
+- **持续集成**：GitHub Actions 在 Windows 上跑 `compileall` + JS 语法检查 + 5 个离线测试套件 + selftest（[CI 状态](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml)）；
 - **可观测性**：结构化事件协议、任务日志落盘、离线自测可复现；
 - **兼容模式**：受限网络/远程桌面/EDR 环境拦截 Chromium 沙箱时自动降级启动。
 
@@ -176,6 +178,8 @@ flowchart LR
 ├─ docs/                     # 构建/命令文档 + 界面截图 + 品牌资源
 ├─ scripts/
 │  └─ setup_mediacrawler.ps1 #   克隆并安装固定 commit 的采集引擎
+├─ .github/workflows/ci.yml  #   GitHub Actions 离线 CI（compileall / JS 语法 / 测试套件 / selftest）
+├─ requirements-dev.txt      #   离线测试与 CI 的 Python 依赖
 ├─ THIRD_PARTY_NOTICES.md    # 第三方组件与许可证说明
 ├─ CHANGELOG.md              # 版本变更记录
 ├─ AGENTS.md                 # 仓库级 AI Agent 协作约定
