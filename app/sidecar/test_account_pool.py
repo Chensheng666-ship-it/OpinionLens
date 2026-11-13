@@ -147,12 +147,21 @@ class UnitCtx:
 
 
 class ServiceCtx:
-    """EngineService 集成上下文（真实 fake engine 子进程）。"""
+    """EngineService 集成上下文（真实 fake engine 子进程）。
 
-    def __init__(self, name: str) -> None:
+    ``legacy_install=True`` 会先给 7 个平台各建出「旧版共用目录」并放入 Cookies，模拟 0.5 之前的老安装，
+    这样懒创建会走 legacy 分支（用于验证老用户升级链路）；新装默认账号是 v2，见 ``test_default_account``。
+    """
+
+    def __init__(self, name: str, *, legacy_install: bool = False) -> None:
         self.data_dir = Path(tempfile.mkdtemp(prefix=f"pool_svc_{name}_")).resolve()
         self.cfg = make_cfg(self.data_dir)
         self.cfg.ensure_dirs()
+        if legacy_install:
+            for platform in PLATFORMS:
+                old = self.cfg.browser_data_dir / f"{platform}_user_data_dir"
+                old.mkdir(parents=True, exist_ok=True)
+                (old / "Cookies").write_text("legacy-cookie", encoding="utf-8")
         env = TempEnv(
             FAKE_ENGINE="1",
             FAKE_TEST_SLEEP="0.05",
@@ -232,6 +241,36 @@ def _fake_args(data_dir: Path, mode: str, platform: str, account_id: str = "") -
         return {}
 
 
+def _seed_legacy_account(
+    manager: AccountManager,
+    platform: str,
+    *,
+    with_profile: bool = True,
+    alias: str = "旧版账号",
+    login_state: str = "ok",
+    status: str = "active",
+) -> Dict[str, Any]:
+    """显式构造一个 legacy 布局账号，模拟「0.5 之前的老安装」。
+
+    默认 ``with_profile=True`` 会真的建出 ``browser_data/<platform>_user_data_dir`` 并放个 Cookies，
+    这样它不会被 ``_upgrade_empty_legacy_accounts()`` 自动升级——正好覆盖「老用户登录态不能丢」这条。
+    """
+    account_id = f"acc_legacy_{platform}"
+    profile_rel = manager._profile_rel(platform, account_id, "legacy")
+    if with_profile:
+        path = manager.cfg.data_dir / profile_rel
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "Cookies").write_text("legacy-cookie", encoding="utf-8")
+    ts = int(time.time())
+    manager.state.execute(
+        "INSERT OR REPLACE INTO accounts(account_id, platform, alias, status, login_state, profile_dir, "
+        "profile_layout, health_score, is_default, risk_level, risk_note, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'legacy', 100, 1, 'normal', '', ?, ?)",
+        (account_id, platform, alias, status, login_state, profile_rel, ts, ts),
+    )
+    return manager.get(account_id)
+
+
 def _seed_ok_account(
     manager: AccountManager,
     platform: str,
@@ -271,38 +310,42 @@ def test_helpers(report: Any) -> None:
 
 
 # ===========================================================================
-# 2. legacy 默认账号懒创建
+# 2. 默认账号懒创建（v2）与 legacy 兼容
 # ===========================================================================
-def test_legacy_default(report: Any) -> None:
-    print("\n--- 2. legacy 默认账号懒创建（旧库兼容）---")
-    ctx = UnitCtx("legacy")
+def test_default_account(report: Any) -> None:
+    print("\n--- 2. 默认账号懒创建（v2 独立目录）与 legacy 兼容 ---")
+    ctx = UnitCtx("default_acc")
     try:
         report.check("空库初始账号列表为空", len(ctx.accounts.list()) == 0)
-        first = ctx.accounts.ensure_legacy_default("xhs")
+        first = ctx.accounts.ensure_default_account("xhs")
         report.check(
-            "懒创建 legacy 默认账号 id=acc_legacy_xhs",
-            first["account_id"] == "acc_legacy_xhs",
+            "新用户首启：默认账号 id=acc_default_xhs",
+            first["account_id"] == "acc_default_xhs",
             first["account_id"],
         )
-        report.check("legacy 账号 profile_layout=legacy", first["profile_layout"] == "legacy")
+        report.check("默认账号 profile_layout=v2（不再新建 legacy）", first["profile_layout"] == "v2")
         report.check(
-            "legacy 账号 profile_dir 指向旧路径",
-            first["profile_dir"] == "browser_data/xhs_user_data_dir",
+            "默认账号 profile_dir 是独立目录",
+            first["profile_dir"] == "browser_data/xhs/acc_default_xhs/user_data_dir",
             first["profile_dir"],
         )
-        report.check("legacy 账号默认账号唯一", first["is_default"] is True)
-        report.check("legacy 账号初始 need_login", first["status"] == "need_login")
-        report.check("legacy 账号初始 login_state=unknown", first["login_state"] == "unknown")
-        again = ctx.accounts.ensure_legacy_default("xhs")
-        report.check("ensure_legacy_default 幂等", again["account_id"] == first["account_id"])
+        report.check("默认账号唯一", first["is_default"] is True)
+        report.check("默认账号初始 need_login", first["status"] == "need_login")
+        report.check("默认账号初始 login_state=unknown", first["login_state"] == "unknown")
+        again = ctx.accounts.ensure_default_account("xhs")
+        report.check("ensure_default_account 幂等", again["account_id"] == first["account_id"])
         report.check("幂等后 xhs 仍只有 1 个账号", len(ctx.accounts.list("xhs")) == 1)
-        all_defaults = ctx.accounts.ensure_all_legacy_defaults()
-        report.check("ensure_all_legacy_defaults 建 7 个平台默认账号", len(all_defaults) == 7)
+        all_defaults = ctx.accounts.ensure_all_default_accounts()
+        report.check("ensure_all_default_accounts 建 7 个平台默认账号", len(all_defaults) == 7)
         report.check(
-            "每个平台的默认账号来自 acc_legacy_<platform>",
-            all(item["account_id"] == f"acc_legacy_{item['platform']}" for item in all_defaults),
+            "每个平台默认账号都是 acc_default_<platform>（v2）",
+            all(
+                item["account_id"] == f"acc_default_{item['platform']}" and item["profile_layout"] == "v2"
+                for item in all_defaults
+            ),
+            str([item["account_id"] for item in all_defaults]),
         )
-        # 旧 profile 目录 + 旧 account_state 存在时，legacy 账号应回填已登录
+        # 老安装（旧 profile 里有登录态）→ 仍建 legacy 行，原样沿用旧 Cookie
         state2 = StateStore(ctx.data_dir / "legacy2.db")
         try:
             old_profile = ctx.cfg.browser_data_dir / "dy_user_data_dir"
@@ -310,13 +353,32 @@ def test_legacy_default(report: Any) -> None:
             (old_profile / "Cookies").write_text("x", encoding="utf-8")
             state2.set_account_state("dy", logged_in=True, profile_exists=True, message="已登录")
             manager2 = AccountManager(ctx.cfg, state2, ActivityGuard())
-            dy = manager2.ensure_legacy_default("dy")
+            dy = manager2.ensure_default_account("dy")
+            report.check("老安装升级：沿用 legacy 账号 id", dy["account_id"] == "acc_legacy_dy", dy["account_id"])
             report.check("旧登录态回填：legacy 账号 active", dy["status"] == "active", dy["status"])
             report.check("旧登录态回填：legacy 账号 login_state=ok", dy["login_state"] == "ok")
             report.check("旧登录态回填：profile_exists=true", dy["profile_exists"] is True)
             report.check("旧登录态回填：默认账号", dy["is_default"] is True)
         finally:
             state2.close()
+        # 空的 legacy 账号（从未登录）→ 启动时原地升级为 v2，不再需要「迁移旧目录」
+        empty_legacy = _seed_legacy_account(ctx.accounts, "ks", with_profile=False, login_state="unknown", status="need_login")
+        report.check("空 legacy 账号初始 layout=legacy", empty_legacy["profile_layout"] == "legacy")
+        ctx.accounts.ensure_all_default_accounts()
+        upgraded = ctx.accounts.get("acc_legacy_ks")
+        report.check("空 legacy 账号启动后被升级为 v2", upgraded["profile_layout"] == "v2", upgraded["profile_layout"])
+        report.check(
+            "升级后 profile_dir 指向账号独立目录",
+            upgraded["profile_dir"] == "browser_data/ks/acc_legacy_ks/user_data_dir",
+            upgraded["profile_dir"],
+        )
+        # 有登录态的 legacy 账号不能被升级动到
+        seeded = _seed_legacy_account(ctx.accounts, "wb")
+        ctx.accounts.ensure_all_default_accounts()
+        report.check(
+            "有登录态的 legacy 账号保持 legacy（老用户不丢 Cookie）",
+            ctx.accounts.get(seeded["account_id"])["profile_layout"] == "legacy",
+        )
     finally:
         ctx.close()
 
@@ -328,7 +390,7 @@ def test_crud(report: Any) -> None:
     print("\n--- 3. 账号 CRUD / 默认账号唯一性 / 软删 ---")
     ctx = UnitCtx("crud")
     try:
-        ctx.accounts.ensure_legacy_default("xhs")
+        ctx.accounts.ensure_default_account("xhs")
         a1 = ctx.accounts.create("xhs", alias="账号A")
         report.check(
             "create 返回 acc_ + 12 位 hex",
@@ -560,7 +622,7 @@ def test_pick(report: Any) -> None:
     ctx = UnitCtx("pick")
     now = int(time.time())
     try:
-        ctx.accounts.ensure_legacy_default("xhs")
+        ctx.accounts.ensure_default_account("xhs")
         # 三个可用账号：health 100/80/60，last_used 旧/中/新
         old = _seed_ok_account(ctx.accounts, "xhs", "旧账号", health=100, last_used_at=now - 7 * 86400)
         mid = _seed_ok_account(ctx.accounts, "xhs", "中账号", health=80, last_used_at=now - 3 * 86400)
@@ -613,8 +675,8 @@ def test_pick(report: Any) -> None:
         ctx.accounts.update(old["account_id"], status="disabled")
         ctx.accounts.update(mid["account_id"], status="disabled")
         ctx.accounts.update(new["account_id"], status="disabled")
-        ctx.accounts.ensure_legacy_default("xhs")
-        ctx.accounts.update("acc_legacy_xhs", status="disabled")
+        ctx.accounts.ensure_default_account("xhs")
+        ctx.accounts.update("acc_default_xhs", status="disabled")
         try:
             ctx.accounts.pick("xhs")
             report.check("无可用账号抛 NO_ACCOUNT", False)
@@ -681,7 +743,7 @@ def test_adopt_legacy(report: Any) -> None:
     am_module.kill_browser_processes_by_marker = lambda marker: []
     ctx = UnitCtx("adopt")
     try:
-        legacy = ctx.accounts.ensure_legacy_default("xhs")
+        legacy = _seed_legacy_account(ctx.accounts, "xhs", with_profile=False)
         old_dir = ctx.cfg.browser_data_dir / "xhs_user_data_dir"
         old_dir.mkdir(parents=True, exist_ok=True)
         (old_dir / "Cookies").write_text("legacy-cookie", encoding="utf-8")
@@ -719,7 +781,7 @@ def test_adopt_legacy(report: Any) -> None:
         report.check("再次 adopt 幂等（migrated=false）", again.get("migrated") is False)
         report.check("再次 adopt 标记 already_v2", again.get("already_v2") is True)
         # 旧目录不存在 → 直接切布局
-        dy = ctx.accounts.ensure_legacy_default("dy")
+        dy = _seed_legacy_account(ctx.accounts, "dy", with_profile=False)
         direct = ctx.accounts.adopt_legacy("dy")
         report.check("旧目录不存在时直接切换 v2", direct.get("migrated") is True)
         report.check(
@@ -727,7 +789,7 @@ def test_adopt_legacy(report: Any) -> None:
             ctx.accounts.get(dy["account_id"])["profile_layout"] == "v2",
         )
         # 冲突：旧目录 + 目标目录同时存在且非空 → PROFILE_LAYOUT_CONFLICT
-        ks = ctx.accounts.ensure_legacy_default("ks")
+        ks = _seed_legacy_account(ctx.accounts, "ks", with_profile=False)
         ks_old = ctx.cfg.browser_data_dir / "ks_user_data_dir"
         ks_old.mkdir(parents=True, exist_ok=True)
         (ks_old / "Cookies").write_text("x", encoding="utf-8")
@@ -746,7 +808,7 @@ def test_adopt_legacy(report: Any) -> None:
         report.check("冲突时旧目录保留", ks_old.is_dir())
         report.check("冲突时账号仍为 legacy", ctx.accounts.get(ks["account_id"])["profile_layout"] == "legacy")
         # 迁移失败回滚：mkdir 失败（platform 目录被同名文件占用）
-        wb = ctx.accounts.ensure_legacy_default("wb")
+        wb = _seed_legacy_account(ctx.accounts, "wb", with_profile=False)
         wb_old = ctx.cfg.browser_data_dir / "wb_user_data_dir"
         wb_old.mkdir(parents=True, exist_ok=True)
         (wb_old / "Cookies").write_text("x", encoding="utf-8")
@@ -765,7 +827,7 @@ def test_adopt_legacy(report: Any) -> None:
         report.check("迁移失败回滚账号 layout=legacy", ctx.accounts.get(wb["account_id"])["profile_layout"] == "legacy")
         blocker.unlink()
         # rename 失败 → copy 兜底
-        bili = ctx.accounts.ensure_legacy_default("bili")
+        bili = _seed_legacy_account(ctx.accounts, "bili", with_profile=False)
         bili_old = ctx.cfg.browser_data_dir / "bili_user_data_dir"
         bili_old.mkdir(parents=True, exist_ok=True)
         (bili_old / "Cookies").write_text("bili-cookie", encoding="utf-8")
@@ -789,7 +851,7 @@ def test_adopt_legacy(report: Any) -> None:
         report.check("copy 兜底后旧目录被清理", not bili_old.exists())
         report.check("copy 兜底后 layout=v2", ctx.accounts.get(bili["account_id"])["profile_layout"] == "v2")
         # 通过 account_id 指定迁移
-        tieba = ctx.accounts.ensure_legacy_default("tieba")
+        tieba = _seed_legacy_account(ctx.accounts, "tieba", with_profile=False)
         tieba_old = ctx.cfg.browser_data_dir / "tieba_user_data_dir"
         tieba_old.mkdir(parents=True, exist_ok=True)
         (tieba_old / "Cookies").write_text("t", encoding="utf-8")
@@ -809,7 +871,7 @@ def test_adopt_legacy(report: Any) -> None:
 # ===========================================================================
 def test_service_integration(report: Any) -> None:
     print("\n--- 7. EngineService/Login/Run 集成（fake engine，离线）---")
-    ctx = ServiceCtx("integration")
+    ctx = ServiceCtx("integration", legacy_install=True)
     events: List[Dict[str, Any]] = []
 
     def _on_event(event: Dict[str, Any]) -> None:
@@ -834,8 +896,8 @@ def test_service_integration(report: Any) -> None:
             rows[0]["default_account_id"],
         )
         report.check(
-            "Legacy 接口行为不变：profile_exists=false（fake 不建旧 profile）",
-            rows[0]["profile_exists"] is False,
+            "老安装升级：profile_exists=true（旧目录里已有登录态，不逼用户重扫）",
+            rows[0]["profile_exists"] is True,
         )
         # 7.2 旧路由登录（无 account_id）：engine 参数与旧版本逐字节一致
         legacy_session = ctx.login_legacy("xhs")
@@ -985,7 +1047,7 @@ def test_service_integration(report: Any) -> None:
         )
         # 7.7 无可用账号（禁用到只剩 expired 的 v2 账号 + 清掉 legacy 兜底）
         ctx.service.accounts.update(
-            ctx.service.accounts.ensure_legacy_default("wb")["account_id"],
+            ctx.service.accounts.ensure_default_account("wb")["account_id"],
             status="archived",
         )
         wb_acc = ctx.service.accounts.create("wb", alias="wb失效")
@@ -1290,7 +1352,7 @@ def test_api_routes(report: Any) -> None:
 # ===========================================================================
 SECTIONS: List[Tuple[str, Callable[[Any], None]]] = [
     ("helpers", test_helpers),
-    ("legacy_default", test_legacy_default),
+    ("default_account", test_default_account),
     ("crud", test_crud),
     ("quota_events", test_quota_and_events),
     ("pick", test_pick),

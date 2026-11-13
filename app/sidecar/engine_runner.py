@@ -2698,6 +2698,12 @@ class EngineService:
         from account_manager import AccountManager
 
         self.accounts = AccountManager(cfg, self.state, self.guard)
+        # 启动整形：为每个平台补齐默认账号（v2），并把「从未登录过」的 legacy 账号原地升级为 v2。
+        # 有登录态的旧目录保持 legacy（legacy_fallback 继续可用），因此升级不丢 Cookie。
+        try:
+            self.accounts.ensure_all_default_accounts()
+        except Exception:  # noqa: BLE001 - 账号整形失败不能拖垮服务启动
+            log.exception("账号池启动整形失败（服务继续启动，账号页仍可懒创建）")
         self.logins = LoginManager(self.runner, self.state, self.guard, cfg, accounts=self.accounts)
         self.runs = RunManager(self.runner, self.state, self.guard, cfg, accounts=self.accounts)
         self._export_fn, self._preview_fn, self._exporter_error = load_exporter()
@@ -2733,7 +2739,7 @@ class EngineService:
         for platform, label in PLATFORMS:
             row = states.get(platform) or {}
             try:
-                default = self.accounts.ensure_legacy_default(platform)
+                default = self.accounts.ensure_default_account(platform)
             except Exception:  # noqa: BLE001 - 账号模块异常不能拖垮旧接口
                 log.exception("账号池懒适配失败：%s", platform)
                 default = None
@@ -2782,7 +2788,7 @@ class EngineService:
 
     def _is_platform_default(self, platform: str, account_id: str) -> bool:
         try:
-            default = self.accounts.ensure_legacy_default(platform)
+            default = self.accounts.ensure_default_account(platform)
         except Exception:  # noqa: BLE001
             return False
         return str(default.get("account_id") or "") == str(account_id or "")

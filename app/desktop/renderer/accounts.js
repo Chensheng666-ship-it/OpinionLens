@@ -1,5 +1,5 @@
 /* ==========================================================================
-   页面：平台账号（多账号池 · 平台分组 / 扫码登录 / 测试 / 启停 / 默认 / 软删 / 迁移旧目录）
+   页面：平台账号（多账号池 · 平台分组 / 扫码登录 / 测试 / 启停 / 默认 / 软删）
    - 主接口：/api/accounts/pool*（契约 §6）；旧 /api/accounts* 仍可用，pool 返回 404 时回退旧单账号展示。
    - 登录：POST /api/accounts/pool/{id}/login + GET .../login/{login_id} 1.5s 轮询；弹窗内渲染真实二维码图片。
    ========================================================================== */
@@ -320,12 +320,11 @@
     var loginBtnLabel = (a.login_state === 'ok' || a.status === 'active') ? '重新扫码' : '扫码登录';
     var loginTitle = (a.login_state === 'ok' || a.status === 'active') ? '已登录，点击可重新扫码（覆盖保存登录态）' : '使用平台 App 扫码登录该账号';
     var enabled = a.status !== 'disabled' && a.status !== 'archived';
-    var isLegacy = a.profile_layout === 'legacy' || String(a.account_id).indexOf('acc_legacy_') === 0;
     return '<article class="account-card acct-card' + (testing ? ' is-testing' : '') + (a.is_default ? ' is-default' : '') + '"' +
         ' data-account-id="' + esc(a.account_id) + '" data-platform="' + esc(a.platform) + '">' +
       '<div class="ac-head">' + FS.platformTile(a.platform, 'lg') +
         '<div class="ac-name"><b>' + esc(a.alias || '未命名账号') + (a.is_default ? ' ' + FS.icon('star', 'star-ic') : '') + '</b>' +
-          '<span>' + esc(meta.name) + (isLegacy ? ' · 旧版目录' : '') + '</span></div>' +
+          '<span>' + esc(meta.name) + '</span></div>' +
         accountStatusChip(a) +
       '</div>' +
       '<div class="acct-health">' +
@@ -352,7 +351,6 @@
         '<button class="link-quiet" data-toggle="' + esc(a.account_id) + '"' + (locked ? ' disabled' : '') + '>' +
           (enabled ? FS.icon('x') + '禁用' : FS.icon('check') + '启用') + '</button>' +
         '<button class="link-quiet" data-edit="' + esc(a.account_id) + '"' + (locked ? ' disabled' : '') + '>' + FS.icon('edit') + '编辑别名</button>' +
-        (isLegacy ? '<button class="link-quiet" data-adopt="' + esc(a.account_id) + '"' + (locked ? ' disabled' : '') + ' title="把旧版 profile 迁移到该账号新目录（幂等）">' + FS.icon('folder') + '迁移旧目录</button>' : '') +
         '<button class="link-quiet is-danger" data-delete="' + esc(a.account_id) + '"' + (locked ? ' disabled' : '') + '>' + FS.icon('trash') + '删除</button>' +
       '</div>' +
     '</article>';

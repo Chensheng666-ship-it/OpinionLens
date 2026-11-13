@@ -419,6 +419,15 @@ is_default/quota:{day,runs,saved_items,day_runs_limit,day_items_limit,runs_remai
   `platforms[].account_id/account_alias/account_attempts`。
 - **legacy 兼容**：旧版单账号（`profile_layout="legacy"`）不会被登录态/冷却硬过滤——始终回退启动 engine，
   由 engine 判定未登录；失败切号只针对 v2 账号池账号。
+- **默认账号（0.5 起为 v2）**：`ensure_default_account()` 在平台没有任何账号时创建
+  `acc_default_<platform>`，布局 `v2`、独立目录 `browser_data/<platform>/<account_id>/user_data_dir`；
+  同一平台可并存多个账号，Cookie 互不覆盖。**legacy 布局不再新建**，只用于旧数据兼容：
+  - 检测到旧版共用目录（`browser_data/<platform>_user_data_dir`）非空时，仍按 `acc_legacy_<platform>` +
+    `legacy` 建行，原样沿用旧 Cookie（老用户不被迫重新扫码）；
+  - 「从未登录过」的空 legacy 行在启动时原地升级为 v2（`_upgrade_empty_legacy_accounts`），
+    带登录态的 legacy 目录保持不动。
+- **调度口径**：v2 账号未登录（`login_state!=ok`）/冷却中不会被调度，平台直接 `failed` 并给出可解释原因；
+  `legacy_fallback` 仅对 legacy 账号生效（旧数据行为不变）。
 - **日配额口径（2026-11-13 修正）**：`runs` 在**一次采集尝试开始时** +1（防止并发超用），但若该尝试终态是
   `login_invalid`（未登录/登录失效，根本没打到平台内容接口），`finish_attempt` 会回滚这次计数（幂等：只对
   `running → login_invalid` 的首次跃迁生效）。自动重试与续采各算一次（它们确实发起了平台请求）；

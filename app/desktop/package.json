@@ -2,7 +2,7 @@
   "name": "opinionlens-desktop",
   "productName": "舆见 OpinionLens",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "舆见 OpinionLens — 社媒舆情采集与 AI 周报桌面端",
   "author": "OpinionLens Contributors",
   "license": "SEE LICENSE IN ../../LICENSE",

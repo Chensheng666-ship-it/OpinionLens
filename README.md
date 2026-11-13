@@ -12,7 +12,7 @@
 [![CI](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml)
 [![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](app/desktop/package.json)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](app/sidecar/README.md)
-[![Release](https://img.shields.io/badge/release-0.4.0-blue)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.5.0-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 </div>
@@ -82,7 +82,7 @@
 | 能力 | 说明 |
 |---|---|
 | 通知提醒 | 采集完成/失败/部分完成、报告生成/失败/降级、账号登录失效、需要人工验证等事件触发通知；支持 **SMTP 邮件、企业微信机器人、Server酱、Bark、通用 Webhook**；outbox 落库、去重、重试退避、静默时段（默认 22:00–08:00）、隐私模式（默认最小化）、发送记录 |
-| 多账号号池 | 同一平台维护多个账号，每个账号独立 Chromium profile（一进程一账号）；账号级扫码登录/检测/启停/默认/软删、健康度/冷却/日配额、选号策略（LRU / 健康度 / 轮询 / 手动）、采集失败自动切号；旧单账号数据自动兼容 |
+| 多账号号池 | 同一平台维护多个账号，每个账号独立 Chromium profile（一进程一账号）；账号级扫码登录/检测/启停/默认/软删、健康度/冷却/日配额、选号策略（LRU / 健康度 / 轮询 / 手动）、采集失败自动切号；旧单账号数据自动兼容。**新装默认账号就是独立目录（v2）**，同平台可并存多个账号，无需任何「迁移」操作 |
 | 多 LLM 模型 API | 在应用内配置 **OpenAI 兼容（含 DeepSeek/Ollama/vLLM/中转站）、DeepSeek、Anthropic** 等模型 API，用于 AI 报告叙述；可多套配置、指定默认、测试连接；API Key 使用 Windows DPAPI 加密，界面只显示脱敏值 |
 | 软件更新 | 「设置 → 关于 → 软件更新」里**检查更新**：对比 GitHub Release 的 tag 与本地版本，显示新版本说明，可**打开发布页**或**直接下载安装包（带进度）并运行**；匿名 API 限流时自动退回解析跳转地址 |
 | 数据目录可迁移 | 「设置 → 关于 → 数据存储」里**更改数据目录**：把 SQLite/导出/报告/登录态整体搬到其他盘（旧目录保留），解决「C 盘被采集数据占满」；也可一键恢复默认目录 |

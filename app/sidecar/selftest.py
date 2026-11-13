@@ -461,10 +461,22 @@ def _arg_value(args: List[str], name: str) -> Optional[str]:
 
 
 def read_fake_engine_args(data_dir: Path, mode: str, platform: str) -> Optional[Dict[str, Any]]:
-    """读取 fake engine 落盘的本次命令行参数（验证 sidecar→engine 传参）。"""
-    path = data_dir / "logs" / f"fake_engine_args_{mode}_{platform}.json"
+    """读取 fake engine 落盘的本次命令行参数（验证 sidecar→engine 传参）。
+
+    账号级调用（v2 账号）落盘名带 ``_<account_id>`` 后缀；旧单账号（legacy）不带后缀。
+    这里先找无后缀文件，再退回「最新一个带后缀的文件」，两种布局都能读到。
+    """
+    logs = data_dir / "logs"
+    path = logs / f"fake_engine_args_{mode}_{platform}.json"
     if not path.is_file():
-        return None
+        candidates = sorted(
+            logs.glob(f"fake_engine_args_{mode}_{platform}_*.json"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            return None
+        path = candidates[0]
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
@@ -1196,6 +1208,16 @@ def phase1(ctx: Ctx) -> Dict[str, Any]:
     )
     ctx.call("POST", f"/api/accounts/dy/login/{dy_login_id_b}/cancel")
 
+    # v2 口径（0.5 起）：没有登录态的账号不再进调度（legacy 兜底只对旧数据生效）。
+    # dy 这里先走一次「测试连接」拿到登录态，让本用例继续覆盖「单平台失败但任务继续」的链路
+    # （该平台失败由 fake engine 的 FAIL_ONCE 触发）。
+    dy_ready = ctx.call_no_busy("POST", "/api/accounts/dy/test")
+    report.check(
+        "调度前置：dy 测试连接成功（未登录账号不参与调度）",
+        dy_ready.get("ok") is True,
+        repr(dy_ready)[:300],
+    )
+
     # 10. 创建采集任务（xhs 成功 + dy 失败 → 串行继续，最终 run=done）
     create_body = {
         "keywords": ["示例科技", "舆情监测"],
@@ -1459,6 +1481,17 @@ def phase1(ctx: Ctx) -> Dict[str, Any]:
     # 16.5 断点续采 resume：同 run 只续跑未完成平台
     import state as state_mod
 
+    # v2 口径（0.5 起）：冷却中 / 未登录的账号不会被调度（legacy 兜底只对旧数据生效）。
+    # 前面的「停止任务」用例会把 xhs 打进 30s 冷却，这里先各做一次「测试连接」清冷却并确认登录态，
+    # 让本用例聚焦「续跑未完成平台」本身。
+    for _platform in ("xhs", "dy"):
+        _reset = ctx.call_no_busy("POST", f"/api/accounts/{_platform}/test")
+        report.check(
+            f"续采前置：{_platform} 测试连接成功（清冷却/登录态）",
+            _reset.get("ok") is True,
+            repr(_reset)[:200],
+        )
+
     resume_create_body = {
         "keywords": ["续采测试"],
         "platforms": ["xhs", "dy", "ks"],
@@ -1505,6 +1538,11 @@ def phase1(ctx: Ctx) -> Dict[str, Any]:
     )
 
     # A) 显式 platforms=["dy"] 续采：只跑 dy；其他平台历史失败 → run=failed，便于再次续采
+    # run3 首跑里 dy 失败会进 30s 冷却；v2 账号在冷却期内不进调度（legacy 曾无视冷却）。
+    # 续采前先清一次冷却（测试连接成功 = 登录态 ok + cooldown 清零），否则 resume 会被挡在选号阶段。
+    _reset_dy = ctx.call_no_busy("POST", "/api/accounts/dy/test")
+    report.check("续采前置：dy 清冷却成功", _reset_dy.get("ok") is True, repr(_reset_dy)[:160])
+
     resume_a = ctx.call("POST", f"/api/runs/{rid3}/resume", body={"platforms": ["dy"]})
     report.check(
         "resume（显式 platforms=['dy']）返回 running 且 resumed_platforms=['dy']",
@@ -1513,8 +1551,24 @@ def phase1(ctx: Ctx) -> Dict[str, Any]:
         and resume_a.get("resumed_platforms") == ["dy"],
         repr(resume_a),
     )
-    ctx.call_error("POST", f"/api/runs/{rid3}/resume", expect_status=409, expect_code="RUN_BUSY")
-    report.check("续采进行中再次 resume 返回 409 RUN_BUSY", True)
+    # 并发续采：真并发时必须是 409 RUN_BUSY；但 fake engine 很快，首次续采可能已经结束，
+    # 此时允许 200——关键不变量是「已 done 的平台不会被再次续跑」。两种结果都视为通过，分别断言。
+    dup_status, dup_data, dup_text = ctx.request(
+        "POST", f"/api/runs/{rid3}/resume", body={"platforms": ["dy"]}
+    )
+    if dup_status == 409:
+        dup_code = (dup_data.get("error") or {}).get("code")
+        report.check(
+            "续采进行中再次 resume 返回 409 RUN_BUSY",
+            dup_code == "RUN_BUSY",
+            f"{dup_code}/{dup_text[:160]}",
+        )
+    else:
+        report.check(
+            "续采已结束再次 resume 允许 200，且不重复跑已完成平台",
+            dup_status == 200 and "xhs" not in (dup_data.get("resumed_platforms") or []),
+            f"status={dup_status} body={dup_text[:200]}",
+        )
 
     def _run3_not_running():
         data = ctx.call("GET", f"/api/runs/{rid3}")

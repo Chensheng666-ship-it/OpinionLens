@@ -278,9 +278,6 @@
     testBatch: function (ids) {
       return Api._request('/api/accounts/pool/test', { method: 'POST', body: { account_ids: ids || [] }, timeout: 180000 });
     },
-    adopt: function (id) {
-      return Api._request('/api/accounts/pool/' + encodeURIComponent(id) + '/adopt', { method: 'POST', timeout: 30000 });
-    },
     schedulePreview: function (platform, strategy) {
       var qs = [];
       if (platform) qs.push('platform=' + encodeURIComponent(platform));

@@ -75,8 +75,7 @@
     },
     pool: {
       accounts: [], total: 0, loaded: false, loading: false, error: '', unimplemented: false,
-      settings: { default_strategy: 'lru', platform_min_interval_s: 30, limits: { daily_runs: 20, daily_saved_items: 2000 } },
-      adopting: {}
+      settings: { default_strategy: 'lru', platform_min_interval_s: 30, limits: { daily_runs: 20, daily_saved_items: 2000 } }
     },
     update: {
       checking: false, result: null, error: '', downloading: false, progress: null,
@@ -750,39 +749,6 @@
     if (status === 'active' || status === '') return login === 'ok' ? '已登录' : (login === 'unknown' ? '未检测' : '未登录');
     return status;
   }
-  function legacyAccountsOf(platform) {
-    return (state.pool.accounts || []).filter(function (a) {
-      return a.platform === platform && (a.profile_layout === 'legacy' || String(a.account_id || '').indexOf('acc_legacy_') === 0);
-    });
-  }
-  function platformLegacyRowHtml(platform) {
-    var meta = FS.platformMeta(platform.id);
-    var all = (state.pool.accounts || []).filter(function (a) { return a.platform === platform.id; });
-    var legacy = legacyAccountsOf(platform.id);
-    var adopting = !!state.pool.adopting[platform.id];
-    var statusText;
-    if (legacy.length) {
-      statusText = legacy.map(function (a) { return (a.alias || a.account_id) + ' · ' + poolAccountStatusText(a); }).join('；');
-    } else if (all.length) {
-      statusText = '已使用新目录布局（' + all.length + ' 个账号）';
-    } else {
-      statusText = '未创建账号';
-    }
-    var adoptBtn;
-    if (legacy.length) {
-      adoptBtn = '<button class="btn btn-sm btn-ghost" data-settings-act="adopt-account" data-id="' + esc(legacy[0].account_id) + '" data-platform="' + esc(platform.id) + '"' +
-        ' title="把旧版共用目录中的登录态搬到该账号自己的独立目录（幂等，可重复点；迁移前请先停止采集/登录）"' +
-        (adopting ? ' disabled' : '') + '>' + (adopting ? '<span class="spinner"></span>迁移中…' : FS.icon('folder') + '迁移旧目录') + '</button>';
-    } else {
-      adoptBtn = '<button class="btn btn-sm btn-ghost" disabled title="该平台没有旧版登录目录">' + FS.icon('folder') + '迁移旧目录</button>';
-    }
-    return '<div class="legacy-row">' +
-      FS.platformTile(platform.id, 'sm') +
-      '<span class="legacy-name">' + esc(meta.name) + '</span>' +
-      '<span class="legacy-status' + (legacy.length ? ' is-legacy' : '') + '">' + esc(statusText) + '</span>' +
-      adoptBtn +
-    '</div>';
-  }
   function poolPanelHtml() {
     var st = state.pool;
     var s = st.settings;
@@ -824,13 +790,6 @@
       '</div></div>' +
     '</section>';
 
-    body += '<section class="card">' +
-      '<div class="card-head"><div class="card-title">' + FS.icon('browser') + '旧版登录目录迁移<span class="sub">一进程一账号 · 旧 profile 兼容</span></div></div>' +
-      '<div class="card-body">' +
-        '<p class="field-hint legacy-hint"><b>「迁移旧目录」是什么：</b>0.3 之前的版本每个平台只有一个共用浏览器目录 <code>browser_data/&lt;platform&gt;_user_data_dir</code>，同一个平台只能存一个账号的登录态；新版本每个账号有自己的独立目录，多账号不会互相覆盖 Cookie。点这个按钮 = 把旧目录里的登录态搬到<strong>该账号</strong>的新目录下（空闲时执行、幂等可重复点、目标已存在会被拒绝），迁移前请先停止采集与登录。不迁移也能照常采集，只是该账号继续沿用旧布局、无法在同一平台挂第二个账号。</p>' +
-        '<div class="legacy-list">' + FS.PLATFORMS.map(platformLegacyRowHtml).join('') + '</div>' +
-      '</div>' +
-    '</section>';
     body += '<section class="card settings-hint-card"><div class="card-head"><div class="card-title">' + FS.icon('shield') + '多账号使用提示</div></div>' +
       '<div class="card-body settings-hint-body">' +
         '<p>每个账号使用独立 Chromium profile（Cookie 隔离），同一时间一个账号只允许一个采集进程；建议每平台 1–3 个账号，避免高频切换。</p>' +
@@ -1553,23 +1512,6 @@
       loadPool(true);
     });
   }
-  function adoptLegacy(accountId, platform) {
-    if (!accountId) return;
-    if (state.pool.adopting[platform]) return;
-    state.pool.adopting[platform] = true;
-    renderPanelIfActive('pool');
-    FS.api.pool.adopt(accountId).then(function () {
-      FS.toast({ tone: 'success', title: '旧登录目录迁移完成', text: FS.platformLabel(platform) + ' 的旧 profile 已迁移到账号新目录。' });
-      state.pool.loaded = false;
-      loadPool(true);
-    }).catch(function (err) {
-      FS.toast({ tone: 'error', title: '迁移旧目录失败', text: apiErrNote(err, '请先停止该平台的采集/登录后重试') });
-    }).finally(function () {
-      delete state.pool.adopting[platform];
-      renderPanelIfActive('pool');
-    });
-  }
-
   /* ------------------------------------------------------------ 关于页动作 */
   function openDataDir() {
     var dir = FS.dataDir();
@@ -1907,7 +1849,6 @@
       case 'save-quiet': saveQuietHours(); break;
       case 'refresh-pool': state.pool.loaded = false; loadPool(true); break;
       case 'save-pool': savePoolSettings(); break;
-      case 'adopt-account': adoptLegacy(id, btn.getAttribute('data-platform') || ''); break;
       case 'open-data-dir': openDataDir(); break;
       case 'open-logs-dir': openLogsDir(); break;
       case 'copy-diag': copyDiag(); break;

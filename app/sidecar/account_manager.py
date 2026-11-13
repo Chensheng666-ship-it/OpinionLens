@@ -4,9 +4,12 @@
 设计要点（契约 IMPLEMENTATION_CONTRACT §2.3.1 / §6，勘察 R2）：
 
 * **真源是 ``accounts`` 表**；``account_state`` 保留双写，旧 API/旧 UI 行为不变。
-* **legacy 默认账号懒创建**：``ensure_legacy_default(platform)`` 在该平台没有默认账号时
-  建 ``acc_legacy_<platform>``（``profile_layout="legacy"``、``profile_dir`` 指向旧目录
-  ``browser_data/<platform>_user_data_dir``），旧单账号路径与 CLI 行为完全保留。
+* **默认账号懒创建（v2）**：``ensure_default_account(platform)`` 在该平台没有任何账号时建
+  ``acc_default_<platform>``（``profile_layout="v2"``、独立 ``profile_dir``
+  ``browser_data/<platform>/<account_id>/user_data_dir``）——同一平台可并存多个账号、Cookie 互不覆盖。
+* **legacy 只做兼容**：0.5 之前建的 ``profile_layout="legacy"`` 行（``browser_data/<platform>_user_data_dir``，
+  每平台一个共用目录）不再新建；「从未登录过」的空 legacy 账号会在启动时原地升级为 v2
+  （``_upgrade_empty_legacy_accounts``），带登录态的旧目录保持 legacy 并由 ``legacy_fallback`` 调度。
 * **一进程一账号**：选号后由 ``ActivityGuard.acquire_account`` 保证同一账号 profile
   不会被两个引擎进程同时打开（RunManager / LoginManager / test / delete 都走同一把锁）。
 * **硬过滤 + 可解释打分**：``pick()`` 返回 ``{account, score, reasons, candidates}``；
@@ -572,11 +575,15 @@ class AccountManager:
         except OSError:
             return False
 
-    def ensure_legacy_default(self, platform: str) -> Dict[str, Any]:
-        """确保平台存在默认账号（旧库懒适配）：无默认账号时建 legacy 默认账号。
+    def ensure_default_account(self, platform: str) -> Dict[str, Any]:
+        """确保平台存在默认账号（懒创建）：无默认账号时建 **v2 独立目录** 默认账号。
 
-        幂等：重复调用返回同一账号；已存在手工账号（v2）但无默认时，选最早的
-        legacy/v2 账号作为默认，不重复建 legacy 行。
+        口径（0.5 起）：新装用户的默认账号就是 v2 布局——每个账号一个独立 profile 目录
+        （``browser_data/<platform>/<account_id>/user_data_dir``），同一平台可以并存多个账号、
+        Cookie 互不覆盖。``legacy`` 布局只作为**旧数据兼容**保留（真老用户已登录的旧目录不迁移，
+        仍由 ``legacy_fallback`` 调度），不再用于新账号。
+
+        幂等：重复调用返回同一账号；已有账号（v2 或历史 legacy）但无默认时，选最早的 v2 账号作默认。
         """
         platform = str(platform or "").strip()
         if platform not in PLATFORM_LABELS:
@@ -588,16 +595,19 @@ class AccountManager:
             rows = self._rows(platform=platform, include_archived=True)
             alive = [row for row in rows if row.get("status") != "archived"]
             if alive:
-                # 已有账号但没默认：优先 legacy 布局，其次最早创建
-                legacy = [row for row in alive if (row.get("profile_layout") or "v2") == "legacy"]
-                chosen = (legacy or alive)[0]
+                # 已有账号但没默认：优先 v2 布局（新口径），其次最早创建
+                v2_rows = [row for row in alive if (row.get("profile_layout") or "v2") != "legacy"]
+                chosen = (v2_rows or alive)[0]
                 self._set_default_locked(str(chosen["account_id"]), platform)
                 return self._to_api(self._row(str(chosen["account_id"])))
-            # 全新平台：建 legacy 默认账号，登录态回填自旧 account_state
+            # 全新平台：判定这是「老安装升级」还是「新用户首启」
+            #   - 旧目录里已经有登录态（browser_data/<platform>_user_data_dir 非空 / account_state 记过）
+            #     → 建 legacy 行，原样沿用旧 Cookie，不逼老用户重新扫码；
+            #   - 否则 → 建 v2 独立目录默认账号（新口径）。
             states = self.state.get_account_states()
             old = states.get(platform) or {}
             logged_in = old.get("logged_in")
-            profile_exists = self._old_profile_exists(platform) or bool(old.get("profile_exists"))
+            legacy_install = self._old_profile_exists(platform) or bool(old.get("profile_exists"))
             if logged_in is True:
                 status, login_state = "active", "ok"
                 message = "已登录"
@@ -608,17 +618,24 @@ class AccountManager:
                 status, login_state = "need_login", "unknown"
                 message = old.get("message") or ""
             ts = now_ts()
-            account_id = f"acc_legacy_{platform}"
+            if legacy_install:
+                layout = "legacy"
+                account_id = f"acc_legacy_{platform}"
+                log.info("账号池：检测到 %s 的旧版登录目录，沿用 legacy 布局创建 %s", platform, account_id)
+            else:
+                layout = "v2"
+                account_id = f"acc_default_{platform}"
             self.state.execute(
                 "INSERT OR IGNORE INTO accounts(account_id, platform, alias, status, login_state, profile_dir, "
                 "profile_layout, health_score, is_default, risk_level, risk_note, created_at, updated_at, "
-                "last_checked_at) VALUES (?, ?, '默认账号', ?, ?, ?, 'legacy', 100, 1, 'normal', ?, ?, ?, ?)",
+                "last_checked_at) VALUES (?, ?, '默认账号', ?, ?, ?, ?, 100, 1, 'normal', ?, ?, ?, ?)",
                 (
                     account_id,
                     platform,
                     status,
                     login_state,
-                    self._profile_rel(platform, account_id, "legacy"),
+                    self._profile_rel(platform, account_id, layout),
+                    layout,
                     message,
                     ts,
                     ts,
@@ -626,15 +643,49 @@ class AccountManager:
                 ),
             )
             log.info(
-                "账号池：为平台 %s 创建 legacy 默认账号 %s（profile_layout=legacy, profile_exists=%s）",
+                "账号池：为平台 %s 创建默认账号 %s（profile_layout=%s, profile_dir=%s）",
                 platform,
                 account_id,
-                profile_exists,
+                layout,
+                self._profile_rel(platform, account_id, layout),
             )
             return self._to_api(self._row(account_id))
 
-    def ensure_all_legacy_defaults(self) -> List[Dict[str, Any]]:
-        return [self.ensure_legacy_default(platform) for platform in PLATFORM_IDS]
+    def _upgrade_empty_legacy_accounts(self, platform: str = "") -> int:
+        """把「从未登录过」的 legacy 账号原地升级为 v2 独立目录（幂等）。
+
+        只动 ``profile`` 目录不存在的行：真正有登录态的旧目录保持 legacy（继续由
+        ``legacy_fallback`` 调度，不破坏老用户），因此升级不会丢任何 Cookie。
+        传入 ``platform`` 时只处理该平台（懒创建时顺手升级，避免每次全表扫）。
+        """
+        upgraded = 0
+        if platform:
+            rows = self.state.query(
+                "SELECT * FROM accounts WHERE profile_layout = 'legacy' AND platform = ?", (str(platform),)
+            )
+        else:
+            rows = self.state.query("SELECT * FROM accounts WHERE profile_layout = 'legacy'")
+        for row in rows:
+            if self.profile_exists(dict(row)):
+                continue
+            account_id = str(row["account_id"])
+            platform = str(row["platform"])
+            self.state.execute(
+                "UPDATE accounts SET profile_layout = 'v2', profile_dir = ?, updated_at = ? "
+                "WHERE account_id = ?",
+                (self._profile_rel(platform, account_id, "v2"), now_ts(), account_id),
+            )
+            upgraded += 1
+            log.info("账号池：legacy 空账号 %s 升级为 v2 独立目录", account_id)
+        return upgraded
+
+    def ensure_all_default_accounts(self) -> List[Dict[str, Any]]:
+        self._upgrade_empty_legacy_accounts()
+        return [self.ensure_default_account(platform) for platform in PLATFORM_IDS]
+
+    # 兼容旧调用名（0.5 前内部/测试用过 ensure_legacy_default，行为已改为创建 v2 账号）
+    ensure_legacy_default = ensure_default_account
+    ensure_all_legacy_defaults = ensure_all_default_accounts
 
     def resolve(self, platform: str, account_id: str = "") -> Dict[str, Any]:
         """解析平台默认账号（account_id 空）或校验指定账号归属。"""
@@ -642,7 +693,7 @@ class AccountManager:
         if platform not in PLATFORM_LABELS:
             raise ServiceError("INVALID_PLATFORM", f"不支持的平台：{platform}", 400)
         if not account_id:
-            return self.ensure_legacy_default(platform)
+            return self.ensure_default_account(platform)
         row = self._row(account_id)
         if str(row.get("platform")) != platform:
             raise ServiceError(
@@ -939,7 +990,7 @@ class AccountManager:
         platform = str(platform or "").strip()
         if platform not in PLATFORM_LABELS:
             raise ServiceError("INVALID_PLATFORM", f"不支持的平台：{platform}", 400)
-        self.ensure_legacy_default(platform)
+        self.ensure_default_account(platform)
         exclude_tuple = tuple(exclude or ())
         evaluation = self._evaluate(platform, strategy, exclude=exclude_tuple, now=now)
         selected = evaluation.get("selected")
@@ -998,11 +1049,11 @@ class AccountManager:
             platform = str(platform).strip()
             if platform not in PLATFORM_LABELS:
                 raise ServiceError("INVALID_PLATFORM", f"不支持的平台：{platform}", 400)
-            self.ensure_legacy_default(platform)
+            self.ensure_default_account(platform)
             result = self._evaluate(platform, strategy)
             result["default_strategy"] = self.default_strategy()
             return result
-        self.ensure_all_legacy_defaults()
+        self.ensure_all_default_accounts()
         return {
             "platforms": [self._evaluate(pid, strategy) for pid in PLATFORM_IDS],
             "default_strategy": self.default_strategy(),
@@ -1021,7 +1072,7 @@ class AccountManager:
         ``NO_ACCOUNT`` 失败——旧版 sidecar 本来就没有这些闸门。
         """
         try:
-            account = self.ensure_legacy_default(platform)
+            account = self.ensure_default_account(platform)
         except ServiceError:
             return None
         if (account.get("profile_layout") or "v2") != "legacy":
@@ -1425,7 +1476,7 @@ class AccountManager:
             if self.guard is not None and self.guard.is_busy():
                 raise ServiceError("BUSY", "当前有登录/检测/采集任务进行中，暂不能迁移账号目录", 409)
             account = (
-                self._row(account_id) if account_id else self.ensure_legacy_default(platform)
+                self._row(account_id) if account_id else self.ensure_default_account(platform)
             )
             platform = str(account.get("platform") or platform or "").strip()
             if platform not in PLATFORM_LABELS:
