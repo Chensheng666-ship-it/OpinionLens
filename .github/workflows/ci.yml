@@ -26,6 +26,9 @@ jobs:
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUNBUFFERED: "1"
+      # 与开发环境一致的本地时区：测试里的日期窗口/静默时段判断依赖本地时间，
+      # Windows runner 默认 UTC，统一到 Asia/Shanghai 避免时区导致的假失败。
+      TZ: Asia/Shanghai
 
     steps:
       - name: Checkout

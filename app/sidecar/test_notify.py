@@ -93,12 +93,19 @@ def _finish(service: Any) -> None:
         pass
 
 
-def make_service(root: str, name: str, worker: bool = False) -> Any:
+def make_service(root: str, name: str, worker: bool = False, quiet_off: bool = False) -> Any:
+    """构造测试用 NotifyService。
+
+    quiet_off=True 时关闭默认静默时段（22:00-08:00），避免测试结果依赖运行机器时区：
+    发送/重试/worker/多通道等用例在 UTC 环境（如 CI）凌晨运行会被静默过滤。
+    """
     state = StateStore(os.path.join(root, f"{name}.db"))
     service = notify_service.NotifyService(
         SimpleNamespace(data_dir=Path(root)), state
     )
     service.start(start_worker=worker)
+    if quiet_off:
+        service.update_settings({"quiet_hours": [], "muted_until": 0, "enabled": True})
     return service
 
 
@@ -475,7 +482,7 @@ def test_channels_api(root: str, server: FakeNotifyServer) -> None:
 # ---------------------------------------------------------------------------
 def test_rules_and_matching(root: str, server: FakeNotifyServer) -> None:
     section("3) 默认规则种子 / 匹配 / 总开关 / 通道绑定")
-    svc = make_service(root, "rules")
+    svc = make_service(root, "rules", quiet_off=True)
     client = make_api(svc)
     try:
         state = svc.state
@@ -743,7 +750,7 @@ def test_render_privacy(root: str, server: FakeNotifyServer) -> None:
 # ---------------------------------------------------------------------------
 def test_send_and_retry(root: str, server: FakeNotifyServer) -> None:
     section("6) 发送 / 退避重试 / 永久失败 / 重试耗尽")
-    svc = make_service(root, "retry")
+    svc = make_service(root, "retry", quiet_off=True)
     try:
         add_webhook_channel(svc, server)
         server.reset()
@@ -877,7 +884,7 @@ def test_send_and_retry(root: str, server: FakeNotifyServer) -> None:
 # ---------------------------------------------------------------------------
 def test_circuit_and_rate(root: str, server: FakeNotifyServer) -> None:
     section("7) 通道熔断 30min / 令牌桶 10 条/分")
-    svc = make_service(root, "circuit")
+    svc = make_service(root, "circuit", quiet_off=True)
     try:
         channel = add_webhook_channel(svc, server)
         channel_id = channel["channel_id"]
@@ -938,7 +945,7 @@ def test_circuit_and_rate(root: str, server: FakeNotifyServer) -> None:
 # ---------------------------------------------------------------------------
 def test_worker_lifecycle(root: str, server: FakeNotifyServer) -> None:
     section("8) worker 线程 / start-shutdown 生命周期")
-    svc = make_service(root, "worker", worker=True)
+    svc = make_service(root, "worker", worker=True, quiet_off=True)
     try:
         channel = add_webhook_channel(svc, server)
         server.reset()
@@ -969,7 +976,7 @@ def test_worker_lifecycle(root: str, server: FakeNotifyServer) -> None:
 def test_test_send_api(root: str, server: FakeNotifyServer) -> None:
     section("9) 测试发送 API（同步 / 不抛 500）")
     smtp = FakeSMTPRecorder().install()
-    svc = make_service(root, "testsend")
+    svc = make_service(root, "testsend", quiet_off=True)
     client = make_api(svc)
     try:
         channel = add_webhook_channel(svc, server)
@@ -1082,7 +1089,7 @@ def test_test_send_api(root: str, server: FakeNotifyServer) -> None:
 # ---------------------------------------------------------------------------
 def test_outbox_logs_settings_api(root: str, server: FakeNotifyServer) -> None:
     section("10) outbox / logs / settings / retry API")
-    svc = make_service(root, "admin_api")
+    svc = make_service(root, "admin_api", quiet_off=True)
     client = make_api(svc)
     try:
         channel = add_webhook_channel(svc, server)
@@ -1172,7 +1179,7 @@ def test_outbox_logs_settings_api(root: str, server: FakeNotifyServer) -> None:
 # ---------------------------------------------------------------------------
 def test_multi_channel(root: str, server: FakeNotifyServer) -> None:
     section("11) 多通道发送语义 / 删除通道兜底")
-    svc = make_service(root, "multi")
+    svc = make_service(root, "multi", quiet_off=True)
     client = make_api(svc)
     try:
         first = add_webhook_channel(svc, server, name="通道A", path="/a")
