@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/logo.png" alt="舆见 OpinionLens" width="96" height="96" />
+
 # 舆见 OpinionLens
 
 **社媒舆情采集 + AI 报告 · Windows 桌面端**
@@ -171,7 +173,7 @@ flowchart LR
 │  ├─ scripts/               #   dev / selftest / build_installer / build_pack_resources
 │  ├─ CONTRACT.md            #   开发契约（事件 / API / 字段）
 │  └─ README.md              #   应用级使用与接口说明
-├─ docs/                     # 构建、常用命令等文档
+├─ docs/                     # 构建/命令文档 + 界面截图 + 品牌资源
 ├─ scripts/
 │  └─ setup_mediacrawler.ps1 #   克隆并安装固定 commit 的采集引擎
 ├─ THIRD_PARTY_NOTICES.md    # 第三方组件与许可证说明

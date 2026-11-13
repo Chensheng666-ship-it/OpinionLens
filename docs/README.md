@@ -29,9 +29,19 @@
 | [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) | 第三方组件许可证说明与 MediaCrawler 非商业许可声明 |
 | [`CHANGELOG.md`](../CHANGELOG.md) | 版本变更记录（开源基线 0.1.0 起） |
 
-## 4. 说明
+## 4. 品牌资源
+
+| 文件 | 用途 |
+|---|---|
+| [`assets/logo.png`](assets/logo.png) | 品牌 Logo（512×512，README/文档展示用） |
+| [`assets/logo.svg`](assets/logo.svg) | 品牌 Logo 矢量版（可缩放、便于二次设计） |
+| [`assets/social-preview.png`](assets/social-preview.png) | GitHub Social Preview 图（1280×640，仓库 Settings → Social preview 上传） |
+
+> 图形语言：「透镜 + 观察波纹」；配色：深海青（`#0f766e` / `#08191b`）。应用图标由
+> `app/scripts/make_app_icons.py` 可复现生成。
+
+## 5. 说明
 
 - 本仓库为**产品源码仓库**，不包含 MediaCrawler 源码（由 `scripts/setup_mediacrawler.ps1` 安装）、
   运行期数据（登录态/数据库/导出/日志）、真实采集样例、依赖与构建产物。
-- 界面截图统一放在 `docs/preview/`（命名 `NN_描述.png`）。仓库整理期间旧截图已清理，
-  新截图整理后补充。
+- 界面截图统一放在 `docs/preview/`（命名 `NN_描述.png`），均为当前「深海青」主题。
