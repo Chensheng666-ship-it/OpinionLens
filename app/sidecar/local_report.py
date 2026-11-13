@@ -173,7 +173,7 @@ def _builtin_html(
   th {{ background: #f1f5f9; color: #475569; }}
   .reason {{ background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;
              border-radius: 10px; padding: 10px 14px; font-size: 13px; }}
-  .revision {{ margin-top: 24px; padding: 14px 18px; background: #eff6ff; border-radius: 12px; }}
+  .revision {{ margin-top: 24px; padding: 14px 18px; background: #e6f4f1; border-radius: 12px; }}
   footer {{ margin-top: 28px; color: #94a3b8; font-size: 12px; text-align: center; }}
 </style></head><body><div class="wrap">
   <h1>{_escape(title)}<span class="badge">本地模板生成 · 无 AI 叙述</span></h1>
@@ -287,7 +287,7 @@ def render_local_report(
     if instruction and engine == "poc":
         note = (
             "<section class=\"local-revision-note\" style=\"margin:24px auto;max-width:960px;"
-            "padding:14px 18px;background:#eff6ff;border-radius:12px;font-family:'Microsoft YaHei',sans-serif;\">"
+            "padding:14px 18px;background:#e6f4f1;border-radius:12px;font-family:'Microsoft YaHei',sans-serif;\">"
             f"<h2 style=\"margin:0 0 6px;font-size:16px;\">修订说明</h2>"
             f"<p style=\"margin:0;color:#1e3a8a;\">{_escape(instruction)}</p></section>"
         )

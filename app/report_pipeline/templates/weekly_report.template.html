@@ -16,7 +16,7 @@
   html { -webkit-text-size-adjust: 100%; }
   body {
     font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", sans-serif;
-    background: #eceff4;
+    background: #eef2f1;
     color: #1f2329;
     padding: 24px 16px 48px;
     line-height: 1.6;
@@ -31,7 +31,7 @@
   }
   /* ---------- 头部 ---------- */
   .header {
-    background: linear-gradient(135deg, #124a8f 0%, #1a5fb4 55%, #3584e4 100%);
+    background: linear-gradient(135deg, #062f2c 0%, #0f766e 55%, #14b8a6 100%);
     color: #fff;
     padding: 34px 42px 28px;
   }
@@ -66,14 +66,14 @@
   .content { padding: 30px 42px 34px; }
   h2 {
     font-size: 19px;
-    color: #124a8f;
-    border-left: 4px solid #3584e4;
+    color: #0b5d56;
+    border-left: 4px solid #14b8a6;
     padding-left: 12px;
     margin: 38px 0 16px;
     font-weight: 700;
   }
   section:first-of-type h2 { margin-top: 0; }
-  .section-kicker { font-size: 12px; color: #8a94a6; margin: -10px 0 14px 16px; letter-spacing: 0.4px; }
+  .section-kicker { font-size: 12px; color: #7c8c88; margin: -10px 0 14px 16px; letter-spacing: 0.4px; }
   /* ---------- 指标卡 ---------- */
   .summary-cards {
     display: grid;
@@ -82,14 +82,14 @@
     margin-bottom: 16px;
   }
   .card {
-    background: #f8f9fb;
-    border: 1px solid #e8eaf0;
+    background: #f8faf9;
+    border: 1px solid #e6ece9;
     border-radius: 10px;
     padding: 16px 14px;
     text-align: center;
   }
   .card .label { font-size: 12px; color: #6b7280; margin-bottom: 6px; }
-  .card .value { font-size: 25px; font-weight: 700; color: #1a5fb4; line-height: 1.2; }
+  .card .value { font-size: 25px; font-weight: 700; color: #0f766e; line-height: 1.2; }
   .card .value small { font-size: 12px; font-weight: 400; color: #6b7280; }
   .card .value.green { color: #16a34a; }
   .card .value.red { color: #dc2626; }
@@ -98,21 +98,21 @@
   .insight {
     font-size: 13px;
     color: #3f4a5a;
-    background: #eff6ff;
-    border-left: 3px solid #60a5fa;
+    background: #e9f5f2;
+    border-left: 3px solid #4fb3a6;
     padding: 11px 15px;
     border-radius: 0 8px 8px 0;
     margin: 14px 0 6px;
     line-height: 1.8;
   }
-  .insight b { color: #124a8f; }
+  .insight b { color: #0b5d56; }
   .insight.warn { background: #fef2f2; border-left-color: #f87171; }
-  .insight.muted { background: #f6f7f9; border-left-color: #cbd5e1; color: #5b6675; }
-  .ai-note { font-size: 12px; color: #8a94a6; margin: -4px 0 12px; }
+  .insight.muted { background: #f6f9f8; border-left-color: #cbd5e1; color: #5b6675; }
+  .ai-note { font-size: 12px; color: #7c8c88; margin: -4px 0 12px; }
   /* ---------- 图表 ---------- */
   .chart-box {
-    background: #f8f9fb;
-    border: 1px solid #e8eaf0;
+    background: #f8faf9;
+    border: 1px solid #e6ece9;
     border-radius: 10px;
     padding: 18px 20px 14px;
     margin-bottom: 14px;
@@ -123,17 +123,17 @@
   .chart-head-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
   .chart-head-row h3 { margin-bottom: 0; }
   .chart-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .chart-hint { font-size: 11px; color: #8a94a6; }
+  .chart-hint { font-size: 11px; color: #7c8c88; }
   .chart-tool-btn {
-    border: 1px solid #d8deea; background: #fff; color: #1a5fb4; border-radius: 6px;
+    border: 1px solid #d3ded9; background: #fff; color: #0f766e; border-radius: 6px;
     padding: 3px 10px; font-size: 12px; cursor: pointer; font-family: inherit;
   }
-  .chart-tool-btn:hover { background: #eef4ff; }
+  .chart-tool-btn:hover { background: #e8f4f1; }
   /* ---------- 表格 ---------- */
   .table-wrap { width: 100%; overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 14px; }
   th {
-    background: #124a8f;
+    background: #0b5d56;
     color: #fff;
     padding: 10px 8px;
     text-align: center;
@@ -142,12 +142,12 @@
   }
   td {
     padding: 10px 8px;
-    border-bottom: 1px solid #e8eaf0;
+    border-bottom: 1px solid #e6ece9;
     text-align: center;
     color: #374151;
     vertical-align: top;
   }
-  tr:nth-child(even) td { background: #f8f9fb; }
+  tr:nth-child(even) td { background: #f8faf9; }
   td.left { text-align: left; }
   .cell-strong { font-weight: 600; color: #1f2329; }
   .cell-sub { display: block; font-size: 11px; color: #9ca3af; margin-top: 2px; }
@@ -178,44 +178,44 @@
   .positive-bar { background: #16a34a; color: #fff; border-radius: 4px; padding: 2px 8px; font-size: 12px; white-space: nowrap; }
   .negative-bar { background: #dc2626; color: #fff; border-radius: 4px; padding: 2px 8px; font-size: 12px; white-space: nowrap; }
   .neutral-bar { background: #94a3b8; color: #fff; border-radius: 4px; padding: 2px 8px; font-size: 12px; white-space: nowrap; }
-  .src-link { color: #1a5fb4; text-decoration: none; font-size: 12px; border-bottom: 1px dashed #93c5fd; white-space: nowrap; }
-  .src-link:hover { color: #124a8f; }
-  .table-note { font-size: 12px; color: #8a94a6; margin: -6px 0 12px; }
+  .src-link { color: #0f766e; text-decoration: none; font-size: 12px; border-bottom: 1px dashed #8fd3c8; white-space: nowrap; }
+  .src-link:hover { color: #0b5d56; }
+  .table-note { font-size: 12px; color: #7c8c88; margin: -6px 0 12px; }
   /* ---------- 热词云 ---------- */
   .hotword-box {
-    background: #f8f9fb;
-    border: 1px solid #e8eaf0;
+    background: #f8faf9;
+    border: 1px solid #e6ece9;
     border-radius: 10px;
     padding: 14px 16px;
     margin: 14px 0 4px;
   }
   .hotword-box .title { font-size: 12px; color: #6b7280; margin-bottom: 8px; }
   .hotword-list { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; }
-  .hotword { color: #1a5fb4; line-height: 1.3; }
+  .hotword { color: #0f766e; line-height: 1.3; }
   .hotword em { font-style: normal; font-size: 10px; color: #9ca3af; margin-left: 2px; }
   .hotword.w1 { font-size: 20px; font-weight: 700; }
-  .hotword.w2 { font-size: 17px; font-weight: 600; color: #1e6fce; }
-  .hotword.w3 { font-size: 14px; color: #3b82f6; }
+  .hotword.w2 { font-size: 17px; font-weight: 600; color: #0d8a80; }
+  .hotword.w3 { font-size: 14px; color: #2aa79b; }
   .hotword.w4 { font-size: 12px; color: #6b7280; }
   /* ---------- 建议 ---------- */
   .suggestion {
-    background: #f8f9fb;
-    border: 1px solid #e8eaf0;
+    background: #f8faf9;
+    border: 1px solid #e6ece9;
     border-radius: 8px;
     padding: 12px 16px;
     margin-bottom: 10px;
     font-size: 13px;
     line-height: 1.8;
   }
-  .suggestion b { color: #124a8f; }
+  .suggestion b { color: #0b5d56; }
   /* ---------- 页脚 ---------- */
   .footer {
     text-align: center;
     font-size: 12px;
-    color: #8a94a6;
+    color: #7c8c88;
     padding: 20px 42px 24px;
-    border-top: 1px solid #e8eaf0;
-    background: #fafbfc;
+    border-top: 1px solid #e6ece9;
+    background: #fafcfb;
     line-height: 1.9;
   }
   .footer .fingerprint { font-family: Consolas, "Courier New", monospace; font-size: 11px; color: #a8b1bf; word-break: break-all; }
@@ -408,7 +408,7 @@ const reportData = {{REPORT_DATA_JSON}};
   Chart.defaults.font.family = FONT;
   Chart.defaults.color = '#4b5563';
 
-  var PALETTE = ['#1a5fb4', '#3584e4', '#62a0ea', '#99c1f1', '#c1d8f5', '#dbeafe', '#93c5fd', '#bfdbfe'];
+  var PALETTE = ['#0b5d56', '#0f766e', '#14b8a6', '#4fb3a6', '#8fd3c8', '#c3ebe5', '#d9f3ee', '#eef9f6'];
 
   // ============ 图表1：近 N 日声量趋势（平台堆叠柱 + 合计折线）============
   var trendDatasets = reportData.trend.platforms.map(function (platform, idx) {
@@ -426,11 +426,11 @@ const reportData = {{REPORT_DATA_JSON}};
     type: 'line',
     label: '当日合计',
     data: reportData.trend.total,
-    borderColor: '#124a8f',
-    backgroundColor: 'rgba(18,74,143,0.08)',
+    borderColor: '#0f766e',
+    backgroundColor: 'rgba(15,118,110,0.10)',
     borderWidth: 2,
     pointRadius: 3,
-    pointBackgroundColor: '#124a8f',
+    pointBackgroundColor: '#0f766e',
     pointBorderColor: '#fff',
     pointBorderWidth: 1.5,
     tension: 0.35,
@@ -464,7 +464,7 @@ const reportData = {{REPORT_DATA_JSON}};
         }
       },
       scales: {
-        y: { beginAtZero: true, stacked: true, grid: { color: '#eef0f4' }, title: { display: true, text: '声量（条）' }, ticks: { precision: 0 } },
+        y: { beginAtZero: true, stacked: true, grid: { color: '#e9efec' }, title: { display: true, text: '声量（条）' }, ticks: { precision: 0 } },
         x: {
           stacked: true, grid: { display: false },
           ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 12, font: { size: 10 } }
@@ -574,10 +574,10 @@ const reportData = {{REPORT_DATA_JSON}};
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#124a8f';
+      ctx.fillStyle = '#0f766e';
       ctx.font = '700 26px "Microsoft YaHei", sans-serif';
       ctx.fillText(reportData.sentiment.centerValue, x, y - 8);
-      ctx.fillStyle = '#8a94a6';
+      ctx.fillStyle = '#7c8c88';
       ctx.font = '12px "Microsoft YaHei", sans-serif';
       ctx.fillText(reportData.sentiment.centerLabel, x, y + 16);
       ctx.restore();
@@ -622,7 +622,7 @@ const reportData = {{REPORT_DATA_JSON}};
       datasets: [{
         label: '提及次数',
         data: reportData.platform.counts,
-        backgroundColor: ['#124a8f', '#1a5fb4', '#3584e4', '#62a0ea', '#93c5fd', '#c1d8f5'],
+        backgroundColor: ['#0b5d56', '#0f766e', '#14b8a6', '#4fb3a6', '#8fd3c8', '#d9f3ee'],
         borderRadius: 6,
         maxBarThickness: 34
       }]
@@ -644,7 +644,7 @@ const reportData = {{REPORT_DATA_JSON}};
         }
       },
       scales: {
-        x: { beginAtZero: true, grid: { color: '#eef0f4' }, title: { display: true, text: '提及次数（内容 + 评论）' } },
+        x: { beginAtZero: true, grid: { color: '#e9efec' }, title: { display: true, text: '提及次数（内容 + 评论）' } },
         y: { grid: { display: false } }
       }
     }

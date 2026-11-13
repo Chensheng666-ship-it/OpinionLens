@@ -155,7 +155,7 @@ def _render_overview_cards(stats: Dict[str, Any]) -> str:
         f'<div class="sub">负面 {_n(sent["negative"]["count"])} 条</div></div>',
         f'<div class="card"><div class="label">风险等级</div>'
         f'<div class="value"{_attr("risk.level", risk["level"])} style="color:'
-        + {"low": "#16a34a", "medium": "#d97706", "high": "#dc2626"}.get(risk["level_code"], "#1a5fb4")
+        + {"low": "#16a34a", "medium": "#d97706", "high": "#dc2626"}.get(risk["level_code"], "#0f766e")
         + f'">{risk["level"]}</div>'
         f'<div class="sub">重点负面事件 {_n(risk["negative_events"])} 起</div></div>',
     ]

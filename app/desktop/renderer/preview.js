@@ -66,7 +66,7 @@
     }
     var m = size * 0.17;
     ctx.fillStyle = '#fff'; ctx.fillRect(size / 2 - m / 2 - 5, size / 2 - m / 2 - 5, m + 10, m + 10);
-    ctx.fillStyle = '#b4552b'; ctx.fillRect(size / 2 - m / 2, size / 2 - m / 2, m, m);
+    ctx.fillStyle = '#0f766e'; ctx.fillRect(size / 2 - m / 2, size / 2 - m / 2, m, m);
     ctx.fillStyle = '#fff';
     ctx.font = '600 ' + Math.round(m * .55) + 'px "Microsoft YaHei UI", sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';

@@ -78,6 +78,7 @@ function parseCli(argv) {
     rawNoSandbox: false,
     demoLogin: false,
     demoPage: null,
+    demoTab: null,
     sidecarEntryOverride: process.env.SIDECAR_ENTRY || null,
   };
   for (let i = 0; i < args.length; i += 1) {
@@ -86,8 +87,12 @@ function parseCli(argv) {
       // 验收/演示辅助：UI 就绪后自动点「扫码登录」，配合 --screenshot 截取应用内二维码
       opts.demoLogin = true;
     } else if (arg === '--demo-page') {
-      // 验收/演示辅助：切到指定页面（accounts|tasks）后再截图
+      // 验收/演示辅助：切到指定页面（accounts|tasks|settings）后再截图
       opts.demoPage = args[i + 1] || null;
+      i += 1;
+    } else if (arg === '--demo-tab') {
+      // 验收/演示辅助：设置页切到指定 tab（model|notify|pool|about）后再截图
+      opts.demoTab = args[i + 1] || null;
       i += 1;
     } else if (arg === '--screenshot' || arg === '-s') {
       opts.screenshotPath = args[i + 1] ? path.resolve(args[i + 1]) : null;
@@ -655,6 +660,22 @@ async function maybeCaptureScreenshot(win) {
         await delay(2500);
       } catch (error) {
         appendMainLog(`--demo-page 失败：${error.message}`);
+      }
+    }
+    // 验收辅助：设置页可指定 tab（model|notify|pool|about）后截图
+    if (CLI.demoTab) {
+      await delay(900);
+      try {
+        const tabbed = await win.webContents.executeJavaScript(`(() => {
+          const el = document.querySelector('[data-settings-tab="${String(CLI.demoTab).replace(/[^a-z]/gi, "")}"]');
+          if (!el) return false;
+          el.click();
+          return true;
+        })()`);
+        appendMainLog(`--demo-tab 切换 ${CLI.demoTab}：${tabbed}`);
+        await delay(1600);
+      } catch (error) {
+        appendMainLog(`--demo-tab 失败：${error.message}`);
       }
     }
     // 验收辅助：自动点「扫码登录」并等待真实二维码出现后再截图

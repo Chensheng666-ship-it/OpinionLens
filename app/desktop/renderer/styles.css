@@ -11,55 +11,56 @@
   --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace;
 
   /* ---------- 文字（对比度已校验） ---------- */
-  --ink: #171a1f;
-  --ink-1: #2b3037;
-  --ink-2: #5c636c;
-  --ink-3: #646b75;          /* 白底 5.38 / surface-2 5.11 / bg 4.80 / surface-3 4.64 */
-  --ink-4: #9aa0a8;          /* 仅装饰/占位/禁用，不承载信息 */
+  --ink: #14201d;
+  --ink-1: #27332f;
+  --ink-2: #57635f;
+  --ink-3: #5f6b67;          /* 白底 5.55 / surface-2 5.35 / bg 5.07 / surface-3 4.96 */
+  --ink-4: #96a29e;          /* 仅装饰/占位/禁用，不承载信息 */
 
   /* ---------- 背景 / 线 ---------- */
-  --bg: #f3f2ee;
+  --bg: #f3f5f4;
   --surface: #ffffff;
-  --surface-2: #faf9f6;
-  --surface-3: #f0eee8;
-  --surface-4: #e9e6df;
-  --line: #e6e2d9;
-  --line-soft: #efede7;
-  --line-strong: #d7d2c6;
-  --line-control: #9d968a;   /* 输入控件边界（非文本对比 ≈2.9:1） */
+  --surface-2: #fafbfa;
+  --surface-3: #eff3f2;
+  --surface-4: #e7edeb;
+  --line: #e2e8e5;
+  --line-soft: #edf1ef;
+  --line-strong: #d3dcd8;
+  --line-control: #87958f;   /* 输入控件边界（非文本对比 ≈3.0:1） */
 
   /* ---------- 品牌 ---------- */
-  --primary: #1c2127;
-  --primary-hover: #2b323b;
-  --accent: #b4552b;
-  --accent-strong: #8e3f1c;
-  --accent-soft: #fbefe7;
-  --accent-line: #ecd3c2;
+  --primary: #0d2b27;
+  --primary-hover: #15403a;
+  --accent: #0f766e;
+  --accent-strong: #0b5d56;
+  --accent-soft: #e6f4f1;
+  --accent-line: #b6ddd5;
 
   /* ---------- 语义 ---------- */
-  --pos: #2e7a5c;
-  --pos-soft: #eaf3ee;
-  --pos-line: #cbe3d7;
-  --neg: #bf422b;
-  --neg-soft: #fbece8;
-  --neg-line: #f0cec6;
+  --pos: #2f7d43;
+  --pos-soft: #eaf4ec;
+  --pos-line: #c9e2ce;
+  --neg: #b3402a;
+  --neg-soft: #fbeeea;
+  --neg-line: #f0d0c8;
   --warn: #8f5a0c;           /* warn-soft 上 5.20:1（原 #a46810 为 4.14，不合格） */
   --warn-soft: #fbf2e1;
   --warn-line: #eedcbb;
-  --info: #38678a;
-  --info-soft: #eaf1f6;
-  --info-line: #cfe0eb;
+  --info: #2f6f8f;
+  --info-soft: #eaf2f7;
+  --info-line: #cfe2ec;
 
   /* ---------- 深色面板 ---------- */
-  --rail: #14171c;
-  --rail-2: #1c2129;
-  --rail-text: #e9e6df;
-  --rail-text-dim: rgba(255, 255, 255, .56);
-  --console-bg: #12151a;
-  --console-head: #191d24;
-  --console-line: #232932;
-  --console-text: #c3c9d1;
-  --console-dim: #7f8b96;
+  --rail: #08191b;
+  --rail-2: #0f292b;
+  --rail-text: #e8efed;
+  --rail-text-dim: rgba(255, 255, 255, .58);
+  --accent-on-dark: #2fb8a8;
+  --console-bg: #071314;
+  --console-head: #0d1f21;
+  --console-line: #173235;
+  --console-text: #c2cfcc;
+  --console-dim: #7d8f8c;
 
   /* ---------- 字号阶梯（7 级 + display） ---------- */
   --text-2xs: 11px;  --lh-2xs: 16px;
@@ -102,9 +103,9 @@
   --shadow-3: 0 36px 90px -30px rgba(10, 12, 16, .5), 0 10px 28px rgba(10, 12, 16, .18);
 
   /* ---------- 焦点 ---------- */
-  --focus-ring: #8e3f1c;
-  --focus-ring-dark: #f0e6da;
-  --ring: 0 0 0 3px rgba(180, 85, 43, .16);
+  --focus-ring: #0b5d56;
+  --focus-ring-dark: #b9e6df;
+  --ring: 0 0 0 3px rgba(15, 118, 110, .22);
 
   /* ---------- 动效 ---------- */
   --dur-fast: 120ms;
