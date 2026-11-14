@@ -20,7 +20,6 @@
     testing: {},             // account_id -> {startedAt, batch}
     testResults: {},         // account_id -> {ok, message, busy, failed, duration_ms}
     login: null,
-    timers: [],
     poolUnavailable: false,
     creating: false,
     updating: {}
@@ -28,13 +27,8 @@
   var viewEl = null;
   var BATCH_CONCURRENCY = 2;  // 契约 §7.1：账号级并发上限 2
   var batch = null;           // 一键全部检测（模块级，切换页面后仍继续）
-  var batchTicker = null;
+  var batchTicker = null;     // 批次进度 ticker（页面切走即停，回到本页自动重启）
 
-  function addTimer(id) { state.timers.push(id); return id; }
-  function clearTimers() {
-    state.timers.forEach(function (id) { clearInterval(id); clearTimeout(id); });
-    state.timers = [];
-  }
   function safeRender() {
     if (FS.currentView === FS.views.accounts && viewEl && document.body.contains(viewEl)) render();
   }
@@ -48,10 +42,7 @@
   function isUnimplemented(err) {
     return !!(err && (err.status === 404 || err.code === 'NOT_IMPLEMENTED' || err.code === 'ACCOUNT_NOT_FOUND'));
   }
-  function apiErrNote(err, fallback) {
-    if (err && err.status === 404 && err.code !== 'ACCOUNT_NOT_FOUND') return '后端暂未实现（404），请稍后重试';
-    return FS.errText(err, fallback || '请求失败');
-  }
+  /* apiErrNote / numOr 已收敛到 ui-kit.js（FS.ui.*），本文件不再保留副本 */
 
   /* ------------------------------------------------------------ 数据归一化 */
   function normalizePoolAccount(a) {
@@ -74,18 +65,14 @@
       profile_exists: !!(a && a.profile_exists),
       quota: {
         day: (quota && quota.day) || '',
-        runs: numOr(quota && quota.runs, 0),
-        platform_runs: numOr(quota && quota.platform_runs, 0),
-        saved_items: numOr(quota && quota.saved_items, 0),
-        day_runs_limit: quota && quota.day_runs_limit !== undefined ? numOr(quota.day_runs_limit, null) : null,
-        day_items_limit: quota && quota.day_items_limit !== undefined ? numOr(quota.day_items_limit, null) : null,
-        runs_remaining: quota && quota.runs_remaining !== undefined ? numOr(quota.runs_remaining, null) : null
+        runs: FS.ui.numOr(quota && quota.runs, 0),
+        platform_runs: FS.ui.numOr(quota && quota.platform_runs, 0),
+        saved_items: FS.ui.numOr(quota && quota.saved_items, 0),
+        day_runs_limit: quota && quota.day_runs_limit !== undefined ? FS.ui.numOr(quota.day_runs_limit, null) : null,
+        day_items_limit: quota && quota.day_items_limit !== undefined ? FS.ui.numOr(quota.day_items_limit, null) : null,
+        runs_remaining: quota && quota.runs_remaining !== undefined ? FS.ui.numOr(quota.runs_remaining, null) : null
       }
     };
-  }
-  function numOr(v, d) {
-    var n = Number(v);
-    return isFinite(n) ? n : d;
   }
   /** 旧 /api/accounts 摘要：tasks/reports 兼容字段保持不变 */
   function normalizeOldAccounts(list) {
@@ -99,7 +86,7 @@
         last_checked_at: a.last_checked_at || null,
         profile_exists: !!a.profile_exists,
         message: a.message || '',
-        account_count: numOr(a.account_count, 0),
+        account_count: FS.ui.numOr(a.account_count, 0),
         default_account_id: a.default_account_id || '',
         accounts: Array.isArray(a.accounts) ? a.accounts : [],
         health: a.health || null
@@ -117,7 +104,7 @@
     state.loading = true;
     if (!silent) render();
     fetchAccounts().catch(function (err) {
-      state.error = apiErrNote(err, '加载账号状态失败');
+      state.error = FS.ui.apiErrNote(err, '加载账号状态失败');
     }).finally(function () {
       state.loading = false;
       safeRender();
@@ -539,7 +526,7 @@
     state.testing[accountId] = { startedAt: startedAt };
     delete state.testResults[accountId];
     safeRender();
-    var tick = setInterval(updateTestElapsed, 1000);
+    var tick = FS.timers.every(updateTestElapsed, 1000, 'accounts-test-elapsed');
     FS.api.pool.test(accountId).then(function (res) {
       state.testResults[accountId] = {
         ok: !!(res && res.ok),
@@ -552,11 +539,11 @@
         state.testResults[accountId] = { ok: false, busy: true, message: busyMessage(err), duration_ms: Date.now() - startedAt, at: Date.now() };
         FS.toast({ tone: 'warn', title: account.alias + ' 暂时无法检测', text: busyMessage(err) });
       } else {
-        state.testResults[accountId] = { ok: false, message: apiErrNote(err, '测试请求失败'), duration_ms: Date.now() - startedAt, at: Date.now() };
+        state.testResults[accountId] = { ok: false, message: FS.ui.apiErrNote(err, '测试请求失败'), duration_ms: Date.now() - startedAt, at: Date.now() };
         FS.toast({ tone: 'error', title: account.alias + ' 测试失败', text: state.testResults[accountId].message });
       }
     }).finally(function () {
-      clearInterval(tick);
+      FS.timers.clear(tick);
       delete state.testing[accountId];
       loadAccounts(true);
       safeRender();
@@ -583,10 +570,10 @@
   /* ------------------------------------------------------------ 一键全部检测（账号级并发上限 2） */
   function startBatchTicker() {
     stopBatchTicker();
-    batchTicker = setInterval(updateTestElapsed, 1000);
+    batchTicker = FS.timers.every(updateTestElapsed, 1000, 'accounts-batch-elapsed');
   }
   function stopBatchTicker() {
-    if (batchTicker) { clearInterval(batchTicker); batchTicker = null; }
+    if (batchTicker) { FS.timers.clear(batchTicker); batchTicker = null; }
   }
   function startTestAll() {
     if (batch && batch.running) return;
@@ -636,7 +623,7 @@
       if (isBusyError(err)) {
         recordBatchResult(id, { ok: false, busy: true, message: busyMessage(err), duration_ms: Date.now() - startedAt, at: Date.now() });
       } else {
-        recordBatchResult(id, { ok: false, failed: true, message: apiErrNote(err, '检测请求失败'), duration_ms: Date.now() - startedAt, at: Date.now() });
+        recordBatchResult(id, { ok: false, failed: true, message: FS.ui.apiErrNote(err, '检测请求失败'), duration_ms: Date.now() - startedAt, at: Date.now() });
       }
     }).finally(function () {
       delete state.testing[id];
@@ -716,7 +703,7 @@
             }
           }).catch(function (err) {
             if (btn) { btn.disabled = false; btn.innerHTML = FS.icon('plus') + '创建并登录'; }
-            FS.toast({ tone: 'error', title: '创建账号失败', text: apiErrNote(err) });
+            FS.toast({ tone: 'error', title: '创建账号失败', text: FS.ui.apiErrNote(err) });
           });
         });
       }
@@ -747,7 +734,7 @@
             loadAccounts(true);
           }).catch(function (err) {
             if (btn) { btn.disabled = false; btn.innerHTML = FS.icon('check') + '保存'; }
-            FS.toast({ tone: 'error', title: '更新别名失败', text: apiErrNote(err) });
+            FS.toast({ tone: 'error', title: '更新别名失败', text: FS.ui.apiErrNote(err) });
           });
         });
       }
@@ -758,7 +745,7 @@
       FS.toast({ tone: 'success', title: '已设为该平台默认账号', text: '未指定账号的旧接口会使用默认账号。' });
       loadAccounts(true);
     }).catch(function (err) {
-      FS.toast({ tone: 'error', title: '设为默认失败', text: apiErrNote(err) });
+      FS.toast({ tone: 'error', title: '设为默认失败', text: FS.ui.apiErrNote(err) });
     });
   }
   function toggleAccountEnabled(accountId) {
@@ -769,7 +756,7 @@
       FS.toast({ tone: 'success', title: enabled ? '账号已禁用' : '账号已启用', text: enabled ? '禁用后不会被自动选号使用。' : '' });
       loadAccounts(true);
     }).catch(function (err) {
-      FS.toast({ tone: 'error', title: '更新账号状态失败', text: apiErrNote(err) });
+      FS.toast({ tone: 'error', title: '更新账号状态失败', text: FS.ui.apiErrNote(err) });
     });
   }
   function deleteAccount(accountId) {
@@ -786,7 +773,7 @@
           FS.toast({ tone: 'success', title: '账号已删除', text: '如需彻底删除本地登录目录，请在设置页查看数据目录后手动清理。' });
           loadAccounts(true);
         }).catch(function (err) {
-          FS.toast({ tone: 'error', title: '删除账号失败', text: apiErrNote(err) });
+          FS.toast({ tone: 'error', title: '删除账号失败', text: FS.ui.apiErrNote(err) });
         });
       }
     });
@@ -1087,6 +1074,11 @@
     });
     startLoginFlow();
   }
+  /** 登录会话定时器统一走 FS.timers：切页/关闭会话时按 id 精确清理，不留悬挂 interval */
+  function clearLoginTimer(session, key) {
+    if (!session) return;
+    if (session[key]) { FS.timers.clear(session[key]); session[key] = null; }
+  }
   function startLoginFlow() {
     var session = state.login;
     if (!session) return;
@@ -1107,12 +1099,12 @@
       var cancelBtn = modalEl.querySelector('[data-login-cancel]');
       if (cancelBtn) cancelBtn.textContent = '取消登录';
     }
-    if (session.elapsedTimer) clearInterval(session.elapsedTimer);
+    clearLoginTimer(session, 'elapsedTimer');
     var startedAt = Date.now();
-    session.elapsedTimer = setInterval(function () {
+    session.elapsedTimer = FS.timers.every(function () {
       var el = modalEl && modalEl.querySelector('#qr-elapsed');
       if (el) el.textContent = '已等待 ' + Math.round((Date.now() - startedAt) / 1000) + 's';
-    }, 1000);
+    }, 1000, 'accounts-login-elapsed');
 
     loginRequestStart(session).then(function (res) {
       if (!state.login || state.login !== session) {
@@ -1124,7 +1116,7 @@
       pollLogin();
     }).catch(function (err) {
       if (!state.login || state.login !== session) return;
-      showLoginError(apiErrNote(err, '启动扫码登录失败'));
+      showLoginError(FS.ui.apiErrNote(err, '启动扫码登录失败'));
     });
   }
   function restartLogin() {
@@ -1138,8 +1130,8 @@
   function pollLogin() {
     var session = state.login;
     if (!session || !session.loginId || session.terminal || session.closed) return;
-    clearTimeout(session.pollTimer);
-    session.pollTimer = setTimeout(function () {
+    clearLoginTimer(session, 'pollTimer');
+    session.pollTimer = FS.timers.after(function () {
       if (!state.login || state.login !== session || session.terminal || session.closed) return;
       loginRequestStatus(session).then(function (res) {
         if (!state.login || state.login !== session || session.terminal) return;
@@ -1158,9 +1150,9 @@
           var st = modalEl.querySelector('#qr-status');
           if (st) { st.className = 'qr-status is-warn'; st.innerHTML = FS.icon('warn') + '<span>状态获取失败，正在重试…</span>'; }
         }
-        session.pollTimer = setTimeout(pollLogin, 3000);
+        session.pollTimer = FS.timers.after(pollLogin, 3000, 'accounts-login-poll');
       });
-    }, 1500);
+    }, 1500, 'accounts-login-poll');
   }
   function renderLoginStatus(res) {
     var session = state.login;
@@ -1195,16 +1187,16 @@
     var restart = modalEl.querySelector('[data-login-restart]');
     if (restart) restart.hidden = false;
     session.terminal = true;
-    if (session.pollTimer) clearTimeout(session.pollTimer);
-    if (session.elapsedTimer) clearInterval(session.elapsedTimer);
+    clearLoginTimer(session, 'pollTimer');
+    clearLoginTimer(session, 'elapsedTimer');
   }
   function handleLoginTerminal(res) {
     var session = state.login;
     if (!session) return;
     var modalEl = session.modal && session.modal.el;
     session.terminal = true;
-    if (session.pollTimer) clearTimeout(session.pollTimer);
-    if (session.elapsedTimer) clearInterval(session.elapsedTimer);
+    clearLoginTimer(session, 'pollTimer');
+    clearLoginTimer(session, 'elapsedTimer');
     if (modalEl) {
       var alertEl = modalEl.querySelector('#manual-alert');
       if (alertEl) { alertEl.hidden = true; alertEl.innerHTML = ''; }
@@ -1236,8 +1228,8 @@
     if (!session) return;
     var loginId = session.loginId;
     session.terminal = true;
-    if (session.pollTimer) clearTimeout(session.pollTimer);
-    if (session.elapsedTimer) clearInterval(session.elapsedTimer);
+    clearLoginTimer(session, 'pollTimer');
+    clearLoginTimer(session, 'elapsedTimer');
     if (loginId) loginRequestCancel(session).catch(function () {});
     if (session.modal && !session.closed) session.modal.close();
     state.login = null;
@@ -1248,8 +1240,8 @@
     var session = state.login;
     if (!session) return;
     session.terminal = true;
-    if (session.pollTimer) clearTimeout(session.pollTimer);
-    if (session.elapsedTimer) clearInterval(session.elapsedTimer);
+    clearLoginTimer(session, 'pollTimer');
+    clearLoginTimer(session, 'elapsedTimer');
     if (session.loginId && (cancelledByUser === true || session.status !== 'confirmed')) {
       loginRequestCancel(session).catch(function () {});
     }
@@ -1282,12 +1274,13 @@
   FS.views.accounts = {
     render: function (el) {
       viewEl = el;
-      clearTimers();
       if (!state.loaded) {
         el.innerHTML = skeletonHtml();
       } else {
         render();
       }
+      /* 一键检测是模块级流程：离开本页时 ticker 被 FS.timers.clearAll 停掉，回到本页重启 */
+      if (batch && batch.running && !batchTicker) startBatchTicker();
       loadAccounts(state.accounts.length > 0 || state.oldAccounts.length > 0);
     },
     refresh: function () {
@@ -1295,12 +1288,13 @@
       FS.toast({ tone: 'info', title: '正在刷新账号状态…', duration: 1800 });
     },
     destroy: function () {
-      clearTimers();
+      /* 页面切走：批次 ticker 停（批次本身继续跑），单账号测试/登录定时器由 FS.timers.clearAll 兜底清理 */
+      stopBatchTicker();
       closeModals();
       if (state.login) {
         var s = state.login;
-        if (s.pollTimer) clearTimeout(s.pollTimer);
-        if (s.elapsedTimer) clearInterval(s.elapsedTimer);
+        clearLoginTimer(s, 'pollTimer');
+        clearLoginTimer(s, 'elapsedTimer');
         state.login = null;
         if (s.modal) { try { s.modal.close(); } catch (e) { /* noop */ } }
       }

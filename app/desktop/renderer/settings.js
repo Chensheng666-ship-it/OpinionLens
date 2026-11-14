@@ -104,10 +104,8 @@
   function isUnimplemented(err) {
     return !!(err && (err.status === 404 || err.code === 'NOT_IMPLEMENTED' || err.code === 'NOT_FOUND'));
   }
-  function apiErrNote(err, fallback) {
-    if (isUnimplemented(err)) return '后端暂未实现（接口返回 404），请稍后重试';
-    return FS.errText(err, fallback || '请求失败');
-  }
+  /** apiErrNote / numOr / strOr / bannerHtml / skeleton* / fieldHtml / selectFieldHtml / chip
+   *  已收敛到 ui-kit.js（FS.ui.*），本文件不再保留副本。 */
   function pickList(data, keys) {
     if (Array.isArray(data)) return data;
     if (!data || typeof data !== 'object') return [];
@@ -116,77 +114,23 @@
     }
     return [];
   }
-  function numOr(v, d) {
-    var n = Number(v);
-    return isFinite(n) ? n : d;
-  }
-  function strOr(v, d) {
-    return (v === null || v === undefined) ? d : String(v);
-  }
-  function fmtNum(v) { return String(numOr(v, 0)); }
+  function fmtNum(v) { return String(FS.ui.numOr(v, 0)); }
 
   /* ------------------------------------------------------------ 通用 HTML 片段 */
-  function bannerHtml(tone, icon, title, bodyHtml, actionsHtml) {
-    return '<div class="banner banner-' + tone + ' settings-banner">' +
-      '<span class="banner-icon">' + FS.icon(icon || 'info') + '</span>' +
-      '<div class="banner-body"><b>' + esc(title) + '</b>' + (bodyHtml ? ' · ' + bodyHtml : '') + '</div>' +
-      (actionsHtml ? '<div class="banner-actions">' + actionsHtml + '</div>' : '') +
-    '</div>';
-  }
-  function skeletonCardHtml(rows) {
-    var inner = '';
-    for (var i = 0; i < (rows || 3); i += 1) {
-      inner += '<div class="skeleton" style="height:' + (i === 0 ? 42 : 30) + 'px;margin-bottom:10px"></div>';
-    }
-    return '<section class="card"><div class="card-body">' + inner + '</div></section>';
-  }
-  function skeletonLines(rows) {
-    var inner = '';
-    for (var i = 0; i < (rows || 3); i += 1) {
-      inner += '<div class="skeleton" style="height:' + (i === 0 ? 44 : 32) + 'px;margin-bottom:10px"></div>';
-    }
-    return inner;
-  }
   function emptyHtml(icon, title, text, actionHtml) {
     return '<div class="empty"><div class="empty-ic">' + FS.icon(icon || 'info') + '</div><b>' + esc(title) + '</b>' +
       (text ? '<p>' + esc(text) + '</p>' : '') + (actionHtml || '') + '</div>';
   }
-  function chip(label, tone, icon) { return FS.chip(label, tone, icon); }
   function inlineResultHtml(res) {
     if (!res) return '';
     if (res.busy) return '<span class="inline-result is-warn">' + FS.icon('clock') + esc(res.message || '稍后重试') + '</span>';
     if (res.ok) {
       var text = '连接成功';
-      if (res.latency_ms !== null && res.latency_ms !== undefined) text += ' · ' + Math.round(numOr(res.latency_ms, 0)) + 'ms';
+      if (res.latency_ms !== null && res.latency_ms !== undefined) text += ' · ' + Math.round(FS.ui.numOr(res.latency_ms, 0)) + 'ms';
       if (res.reply) text += ' · 回复：' + res.reply;
       return '<span class="inline-result is-ok">' + FS.icon('check') + esc(text) + '</span>';
     }
     return '<span class="inline-result is-fail">' + FS.icon('x') + esc(res.error || res.message || '连接失败') + '</span>';
-  }
-  function fieldHtml(opts) {
-    return '<div class="field' + (opts.wide ? ' field-wide' : '') + '">' +
-      (opts.label ? '<label class="field-label" for="' + esc(opts.id) + '">' + esc(opts.label) +
-        (opts.optional ? '<span class="optional">' + esc(opts.optional) + '</span>' : '') + '</label>' : '') +
-      (opts.control || ('<input class="input' + (opts.mono ? ' input-mono' : '') + '" id="' + esc(opts.id) + '" type="' + (opts.type || 'text') + '"' +
-        ' value="' + esc(opts.value === null || opts.value === undefined ? '' : opts.value) + '"' +
-        (opts.placeholder ? ' placeholder="' + esc(opts.placeholder) + '"' : '') +
-        (opts.attrs || '') + '>')) +
-      (opts.hint ? '<div class="field-hint">' + (opts.hintIsHtml ? opts.hint : esc(opts.hint)) + '</div>' : '') +
-    '</div>';
-  }
-  function selectFieldHtml(opts) {
-    var options = (opts.options || []).map(function (o) {
-      var v = typeof o === 'object' ? o.value : o;
-      var label = typeof o === 'object' ? o.label : o;
-      return '<option value="' + esc(v) + '"' + (String(v) === String(opts.value) ? ' selected' : '') + '>' + esc(label) + '</option>';
-    }).join('');
-    return fieldHtml({
-      id: opts.id,
-      label: opts.label,
-      optional: opts.optional,
-      control: '<select class="select" id="' + esc(opts.id) + '">' + options + '</select>',
-      hint: opts.hint
-    });
   }
   function switchHtml(attrs, checked, text, small) {
     return '<label class="switch"><input type="checkbox" ' + attrs + (checked ? ' checked' : '') + '>' +
@@ -270,18 +214,18 @@
   /* ---------- 模型 API ---------- */
   function normalizeProvider(p) {
     return {
-      provider_id: strOr(p && (p.provider_id || p.id), ''),
-      name: strOr(p && p.name, ''),
-      kind: strOr(p && p.kind, 'openai_compatible'),
-      base_url: strOr(p && p.base_url, ''),
-      model: strOr(p && p.model, ''),
+      provider_id: FS.ui.strOr(p && (p.provider_id || p.id), ''),
+      name: FS.ui.strOr(p && p.name, ''),
+      kind: FS.ui.strOr(p && p.kind, 'openai_compatible'),
+      base_url: FS.ui.strOr(p && p.base_url, ''),
+      model: FS.ui.strOr(p && p.model, ''),
       enabled: !!(p && (p.enabled === undefined ? true : p.enabled)),
       is_default: !!(p && (p.is_default === true || p.is_default === 1)),
       secret_configured: !!(p && (p.secret_configured === true || p.secret_configured === 1)),
-      api_key_masked: strOr(p && p.api_key_masked, ''),
+      api_key_masked: FS.ui.strOr(p && p.api_key_masked, ''),
       last_test_ok: p && (p.last_test_ok === true || p.last_test_ok === 1) ? true : (p && (p.last_test_ok === false || p.last_test_ok === 0) ? false : null),
       last_test_at: p && p.last_test_at ? p.last_test_at : null,
-      last_test_msg: strOr(p && p.last_test_msg, '')
+      last_test_msg: FS.ui.strOr(p && p.last_test_msg, '')
     };
   }
   function loadModel(force) {
@@ -320,9 +264,9 @@
     var result = state.llm.testResults[id];
     var testChip;
     if (testing) testChip = '<span class="chip chip-warn"><span class="spinner"></span>测试中</span>';
-    else if (p.last_test_ok === true) testChip = chip('连接正常', 'pos', 'check');
-    else if (p.last_test_ok === false) testChip = chip('连接失败', 'neg', 'alert');
-    else testChip = chip('未测试', 'muted');
+    else if (p.last_test_ok === true) testChip = FS.ui.chip('连接正常', 'pos', 'check');
+    else if (p.last_test_ok === false) testChip = FS.ui.chip('连接失败', 'neg', 'alert');
+    else testChip = FS.ui.chip('未测试', 'muted');
     var keyHtml = p.secret_configured
       ? '<span class="key-mask">已配置 ' + esc(p.api_key_masked || '****') + '</span>'
       : '<span class="key-mask is-empty">未配置密钥</span>';
@@ -360,17 +304,17 @@
       var extra = rc && rc.configured
         ? '当前报告服务读取到的状态：已配置（' + esc(rc.provider_name || rc.model || '未知模型') + '）。'
         : '当前报告将使用本地模板生成（degraded）。';
-      body += bannerHtml('warn', 'warn', '模型 API 配置接口暂未实现',
+      body += FS.ui.bannerHtml('warn', 'warn', '模型 API 配置接口暂未实现',
         '后端 <code>/api/llm/providers</code> 返回 404，页面已降级展示；后端接线后点「刷新」重试。' + extra,
         '<button class="btn btn-sm btn-ghost" data-settings-act="refresh-model">' + FS.icon('refresh') + '刷新</button>');
     } else if (st.loaded && !st.providers.length) {
-      body += bannerHtml('warn', 'warn', '未配置模型 API',
+      body += FS.ui.bannerHtml('warn', 'warn', '未配置模型 API',
         '报告将使用本地模板生成（degraded 降级），采集与导出不受影响。配置一个 provider 后，报告叙述将直连你配置的模型。');
     }
-    if (st.error) body += bannerHtml('neg', 'alert', '模型 API 配置加载失败', esc(st.error));
+    if (st.error) body += FS.ui.bannerHtml('neg', 'alert', '模型 API 配置加载失败', esc(st.error));
     var listHtml;
     if (st.loading && !st.providers.length) {
-      listHtml = '<div class="provider-list">' + skeletonLines(3) + '</div>';
+      listHtml = '<div class="provider-list">' + FS.ui.skeletonLines(3) + '</div>';
     } else if (st.providers.length) {
       listHtml = '<div class="provider-list">' + st.providers.map(providerCardHtml).join('') + '</div>';
     } else {
@@ -413,7 +357,7 @@
       worker: d.worker || {},
       channel_types: Array.isArray(d.channel_types) ? d.channel_types : [],
       event_types: Array.isArray(d.event_types) ? d.event_types : [],
-      brand: strOr(d.brand, '')
+      brand: FS.ui.strOr(d.brand, '')
     };
   }
   function quietOfConfig(cfg) {
@@ -422,9 +366,9 @@
     var q = qh[0] || {};
     return {
       enabled: true,
-      start: strOr(q.start, '22:00'),
-      end: strOr(q.end, '08:00'),
-      severity: strOr(q.severity, 'warn')
+      start: FS.ui.strOr(q.start, '22:00'),
+      end: FS.ui.strOr(q.end, '08:00'),
+      severity: FS.ui.strOr(q.severity, 'warn')
     };
   }
   function loadNotify(force) {
@@ -493,21 +437,21 @@
       var item = list[i];
       if (!item) continue;
       if (typeof item === 'string' && item === type) return channelTypeMeta(type).label;
-      if (typeof item === 'object' && item.type === type) return strOr(item.label || item.name, channelTypeMeta(type).label);
+      if (typeof item === 'object' && item.type === type) return FS.ui.strOr(item.label || item.name, channelTypeMeta(type).label);
     }
     return channelTypeMeta(type).label;
   }
   function channelCardHtml(c) {
-    var id = strOr(c.channel_id, '');
+    var id = FS.ui.strOr(c.channel_id, '');
     var t = channelTypeMeta(c.type);
     var testing = !!state.notify.testing[id];
     var result = state.notify.testResults[id];
     var statusChip;
     if (testing) statusChip = '<span class="chip chip-warn"><span class="spinner"></span>发送中</span>';
-    else if (c.health && c.health.circuit_open) statusChip = chip('熔断', 'neg', 'alert');
-    else if (c.last_status === 'ok') statusChip = chip('正常', 'pos', 'check');
-    else if (c.last_status === 'failed') statusChip = chip('异常', 'neg', 'alert');
-    else statusChip = chip('未发送', 'muted');
+    else if (c.health && c.health.circuit_open) statusChip = FS.ui.chip('熔断', 'neg', 'alert');
+    else if (c.last_status === 'ok') statusChip = FS.ui.chip('正常', 'pos', 'check');
+    else if (c.last_status === 'failed') statusChip = FS.ui.chip('异常', 'neg', 'alert');
+    else statusChip = FS.ui.chip('未发送', 'muted');
     var meta = [];
     if (c.key_masked) meta.push('密钥 ' + c.key_masked);
     else if (c.secret_configured === false) meta.push('未配置密钥');
@@ -539,10 +483,10 @@
       return '<div class="notify-stat"><span>' + esc(label) + '</span><b class="' + (tone ? 'is-' + tone : '') + '">' + esc(String(value === undefined || value === null ? 0 : value)) + '</b></div>';
     }
     return '<div class="notify-stats">' +
-      stat('待发送', numOr(w.pending, 0), 'warn') +
-      stat('发送中', numOr(w.sending, 0), 'accent') +
-      stat('失败', numOr(w.failed, 0), 'neg') +
-      stat('已发送', numOr(w.sent, 0), 'pos') +
+      stat('待发送', FS.ui.numOr(w.pending, 0), 'warn') +
+      stat('发送中', FS.ui.numOr(w.sending, 0), 'accent') +
+      stat('失败', FS.ui.numOr(w.failed, 0), 'neg') +
+      stat('已发送', FS.ui.numOr(w.sent, 0), 'pos') +
       '<div class="notify-stat"><span>最近成功</span><b>' + esc(w.last_sent_at ? FS.fmtDateTime(w.last_sent_at) : '—') + '</b></div>' +
     '</div>';
   }
@@ -554,10 +498,10 @@
       '<span class="outbox-time">' + esc(time ? FS.fmtDateTime(time) : '—') + '</span>' +
       '<span class="outbox-main"><b>' + esc(item.event_label || item.event_type || item.title || '通知事件') + '</b>' +
         '<small>' + esc(item.title || item.body || '') + '</small></span>' +
-      '<span class="outbox-sev">' + chip(strOr(item.severity, 'info'), item.severity === 'error' ? 'neg' : item.severity === 'warn' ? 'warn' : 'muted') + '</span>' +
-      '<span class="outbox-status">' + chip(st.label, st.tone) + '</span>' +
+      '<span class="outbox-sev">' + FS.ui.chip(FS.ui.strOr(item.severity, 'info'), item.severity === 'error' ? 'neg' : item.severity === 'warn' ? 'warn' : 'muted') + '</span>' +
+      '<span class="outbox-status">' + FS.ui.chip(st.label, st.tone) + '</span>' +
       '<span class="outbox-attempts">' + fmtNum(item.attempts) + ' 次' + (item.last_error ? ' · ' + esc(item.last_error) : '') + '</span>' +
-      (retryable ? '<span class="outbox-act"><button class="btn btn-sm btn-ghost" data-settings-act="retry-outbox" data-id="' + esc(strOr(item.outbox_id, '')) + '">' + FS.icon('refresh') + '重试</button></span>' : '<span class="outbox-act"></span>') +
+      (retryable ? '<span class="outbox-act"><button class="btn btn-sm btn-ghost" data-settings-act="retry-outbox" data-id="' + esc(FS.ui.strOr(item.outbox_id, '')) + '">' + FS.icon('refresh') + '重试</button></span>' : '<span class="outbox-act"></span>') +
     '</div>';
   }
   function logRowHtml(item) {
@@ -565,9 +509,9 @@
       '<span class="outbox-time">' + esc(item.created_at ? FS.fmtDateTime(item.created_at) : '—') + '</span>' +
       '<span class="outbox-main"><b>' + esc(item.channel_name || item.channel_type || item.channel_id || '通道') + '</b>' +
         '<small>' + esc(item.error || (item.ok ? '发送成功' : '发送失败')) + '</small></span>' +
-      '<span class="outbox-sev">' + chip(item.ok ? 'ok' : 'fail', item.ok ? 'pos' : 'neg') + '</span>' +
+      '<span class="outbox-sev">' + FS.ui.chip(item.ok ? 'ok' : 'fail', item.ok ? 'pos' : 'neg') + '</span>' +
       '<span class="outbox-status">' + (item.http_status ? '<span class="mono">HTTP ' + esc(String(item.http_status)) + '</span>' : '—') + '</span>' +
-      '<span class="outbox-attempts">' + (item.latency_ms !== null && item.latency_ms !== undefined ? Math.round(numOr(item.latency_ms, 0)) + 'ms' : '—') + '</span>' +
+      '<span class="outbox-attempts">' + (item.latency_ms !== null && item.latency_ms !== undefined ? Math.round(FS.ui.numOr(item.latency_ms, 0)) + 'ms' : '—') + '</span>' +
       '<span class="outbox-act"></span>' +
     '</div>';
   }
@@ -577,11 +521,11 @@
     var q = quietOfConfig(cfg);
     var body = '';
     if (st.unimplemented) {
-      body += bannerHtml('warn', 'warn', '通知推送接口暂未实现',
+      body += FS.ui.bannerHtml('warn', 'warn', '通知推送接口暂未实现',
         '后端 <code>/api/notify/config</code> 返回 404，页面以默认值降级展示；后端接线后点「刷新」重试。',
         '<button class="btn btn-sm btn-ghost" data-settings-act="refresh-notify">' + FS.icon('refresh') + '刷新</button>');
     }
-    if (st.error) body += bannerHtml('neg', 'alert', '通知配置加载失败', esc(st.error));
+    if (st.error) body += FS.ui.bannerHtml('neg', 'alert', '通知配置加载失败', esc(st.error));
 
     body += '<section class="card notify-status-card">' +
       '<div class="card-body notify-status-body">' + workerHtml(cfg) + '</div>' +
@@ -668,18 +612,18 @@
   /* ---------- 账号池 ---------- */
   function normalizePoolAccount(a) {
     return {
-      account_id: strOr(a && (a.account_id || a.id), ''),
-      platform: strOr(a && a.platform, ''),
-      alias: strOr(a && a.alias, ''),
-      status: strOr(a && a.status, 'need_login'),
-      login_state: strOr(a && a.login_state, 'unknown'),
-      profile_layout: strOr(a && a.profile_layout, 'v2'),
-      health_score: numOr(a && a.health_score, 100),
+      account_id: FS.ui.strOr(a && (a.account_id || a.id), ''),
+      platform: FS.ui.strOr(a && a.platform, ''),
+      alias: FS.ui.strOr(a && a.alias, ''),
+      status: FS.ui.strOr(a && a.status, 'need_login'),
+      login_state: FS.ui.strOr(a && a.login_state, 'unknown'),
+      profile_layout: FS.ui.strOr(a && a.profile_layout, 'v2'),
+      health_score: FS.ui.numOr(a && a.health_score, 100),
       is_default: !!(a && (a.is_default === true || a.is_default === 1)),
       last_used_at: a && a.last_used_at || null,
       last_checked_at: a && a.last_checked_at || null,
       cooldown_until: a && a.cooldown_until || null,
-      risk_level: strOr(a && a.risk_level, 'normal'),
+      risk_level: FS.ui.strOr(a && a.risk_level, 'normal'),
       quota: (a && a.quota) || {}
     };
   }
@@ -699,14 +643,14 @@
     }
     FS.api.pool.list().then(function (data) {
       st.accounts = pickList(data, ['accounts', 'items']).map(normalizePoolAccount);
-      st.total = numOr(data && data.total, st.accounts.length);
+      st.total = FS.ui.numOr(data && data.total, st.accounts.length);
       if (data && data.default_strategy) st.settings.default_strategy = data.default_strategy;
       if (data && data.platform_min_interval_s !== undefined && data.platform_min_interval_s !== null) {
-        st.settings.platform_min_interval_s = numOr(data.platform_min_interval_s, st.settings.platform_min_interval_s);
+        st.settings.platform_min_interval_s = FS.ui.numOr(data.platform_min_interval_s, st.settings.platform_min_interval_s);
       }
       if (data && data.limits && typeof data.limits === 'object') {
-        st.settings.limits.daily_runs = numOr(data.limits.daily_runs, st.settings.limits.daily_runs);
-        st.settings.limits.daily_saved_items = numOr(data.limits.daily_saved_items, st.settings.limits.daily_saved_items);
+        st.settings.limits.daily_runs = FS.ui.numOr(data.limits.daily_runs, st.settings.limits.daily_runs);
+        st.settings.limits.daily_saved_items = FS.ui.numOr(data.limits.daily_saved_items, st.settings.limits.daily_saved_items);
       }
       st.loaded = true;
       st.unimplemented = false;
@@ -731,10 +675,10 @@
     if (!s || typeof s !== 'object') return;
     var inner = s.settings && typeof s.settings === 'object' ? s.settings : s;
     if (inner.default_strategy) st.settings.default_strategy = inner.default_strategy;
-    if (inner.platform_min_interval_s !== undefined && inner.platform_min_interval_s !== null) st.settings.platform_min_interval_s = numOr(inner.platform_min_interval_s, st.settings.platform_min_interval_s);
+    if (inner.platform_min_interval_s !== undefined && inner.platform_min_interval_s !== null) st.settings.platform_min_interval_s = FS.ui.numOr(inner.platform_min_interval_s, st.settings.platform_min_interval_s);
     if (inner.limits && typeof inner.limits === 'object') {
-      st.settings.limits.daily_runs = numOr(inner.limits.daily_runs, st.settings.limits.daily_runs);
-      st.settings.limits.daily_saved_items = numOr(inner.limits.daily_saved_items, st.settings.limits.daily_saved_items);
+      st.settings.limits.daily_runs = FS.ui.numOr(inner.limits.daily_runs, st.settings.limits.daily_runs);
+      st.settings.limits.daily_saved_items = FS.ui.numOr(inner.limits.daily_saved_items, st.settings.limits.daily_saved_items);
     }
   }
   function poolAccountStatusText(a) {
@@ -754,11 +698,11 @@
     var s = st.settings;
     var body = '';
     if (st.unimplemented) {
-      body += bannerHtml('warn', 'warn', '账号池接口暂未实现',
+      body += FS.ui.bannerHtml('warn', 'warn', '账号池接口暂未实现',
         '后端 <code>/api/accounts/pool</code> 返回 404，页面以默认值降级展示；后端接线后点「刷新」重试。',
         '<button class="btn btn-sm btn-ghost" data-settings-act="refresh-pool">' + FS.icon('refresh') + '刷新</button>');
     }
-    if (st.error) body += bannerHtml('neg', 'alert', '账号池加载失败', esc(st.error));
+    if (st.error) body += FS.ui.bannerHtml('neg', 'alert', '账号池加载失败', esc(st.error));
     var active = st.accounts.filter(function (a) {
       return a.status !== 'archived' && a.status !== 'disabled' && a.login_state === 'ok';
     }).length;
@@ -778,10 +722,10 @@
       '<div class="card-head"><div class="card-title">' + FS.icon('radar') + '选号策略与限额<span class="sub">任务自动选号时生效</span></div></div>' +
       '<div class="card-body"><div class="form">' +
         '<div class="form-cols">' +
-          selectFieldHtml({ id: 'pool-strategy', label: '默认选号策略', value: s.default_strategy, options: STRATEGIES, hint: 'LRU：优先使用最久未用的可用账号；健康度优先：优先健康分高的账号；轮询：依次轮换。' }) +
-          fieldHtml({ id: 'pool-interval', label: '平台最小间隔（秒）', value: s.platform_min_interval_s, type: 'number', attrs: ' min="0" step="1"', hint: '同一平台两次任务之间的最小间隔，降低风控概率。' }) +
-          fieldHtml({ id: 'pool-runs', label: '单账号日 runs 上限', value: s.limits.daily_runs, type: 'number', attrs: ' min="1" step="1"', hint: '每个账号每天最多被调度多少次采集任务。' }) +
-          fieldHtml({ id: 'pool-items', label: '单账号日条数上限', value: s.limits.daily_saved_items, type: 'number', attrs: ' min="0" step="100"', hint: '每个账号每天累计保存的内容条数上限（0 = 不限制）。' }) +
+          FS.ui.selectFieldHtml({ id: 'pool-strategy', label: '默认选号策略', value: s.default_strategy, options: STRATEGIES, hint: 'LRU：优先使用最久未用的可用账号；健康度优先：优先健康分高的账号；轮询：依次轮换。' }) +
+          FS.ui.fieldHtml({ id: 'pool-interval', label: '平台最小间隔（秒）', value: s.platform_min_interval_s, type: 'number', attrs: ' min="0" step="1"', hint: '同一平台两次任务之间的最小间隔，降低风控概率。' }) +
+          FS.ui.fieldHtml({ id: 'pool-runs', label: '单账号日 runs 上限', value: s.limits.daily_runs, type: 'number', attrs: ' min="1" step="1"', hint: '每个账号每天最多被调度多少次采集任务。' }) +
+          FS.ui.fieldHtml({ id: 'pool-items', label: '单账号日条数上限', value: s.limits.daily_saved_items, type: 'number', attrs: ' min="0" step="100"', hint: '每个账号每天累计保存的内容条数上限（0 = 不限制）。' }) +
         '</div>' +
         '<div class="settings-actions">' +
           '<span class="field-hint">限额与冷却由本地服务统一记录；策略变更即时生效，无需重启应用。</span>' +
@@ -857,17 +801,19 @@
   /* ---------- 关于：数据存储 / 软件更新（卡片渲染，只读 state） ---------- */
   /** preload 是否暴露了某个 fsapi 方法：静态预览 / 浏览器直开时全部为 false */
   function hasApi(name) {
+    /* ?preview=1 在 Electron 下也能强制预览：此时按「无桌面 API」处理，走 previewApiToast 口径 */
+    if (FS.previewMode) return false;
     return !!(window.fsapi && typeof window.fsapi[name] === 'function');
   }
   function fmtMB(bytes) {
-    var n = numOr(bytes, 0);
+    var n = FS.ui.numOr(bytes, 0);
     return n > 0 ? (n / 1048576).toFixed(1) + ' MB' : '0.0 MB';
   }
   function progressBarHtml(percent, text) {
-    var pct = (percent === null || percent === undefined) ? null : Math.max(0, Math.min(100, numOr(percent, 0)));
+    var pct = (percent === null || percent === undefined) ? null : Math.max(0, Math.min(100, FS.ui.numOr(percent, 0)));
     return '<div class="progress-wrap" style="display:flex;flex-direction:column;gap:6px;margin-top:12px">' +
       '<div class="progress"><div class="progress-bar' + (pct === null ? ' is-striped' : '') + '" style="width:' + (pct === null ? 100 : pct) + '%"></div></div>' +
-      '<div class="field-hint">' + esc(strOr(text, '')) + (pct === null ? '' : ' · ' + pct + '%') + '</div>' +
+      '<div class="field-hint">' + esc(FS.ui.strOr(text, '')) + (pct === null ? '' : ' · ' + pct + '%') + '</div>' +
     '</div>';
   }
   function updateSourceLabel(source) {
@@ -879,24 +825,24 @@
     if (u.checking) return '检查中…';
     if (u.error && !u.result) return '检查失败';
     if (!u.result) return '未检查';
-    if (u.result.hasUpdate === true) return '发现新版本 v' + strOr(u.result.latest, '—');
-    return '已是最新（v' + strOr(u.result.latest, '—') + '）';
+    if (u.result.hasUpdate === true) return '发现新版本 v' + FS.ui.strOr(u.result.latest, '—');
+    return '已是最新（v' + FS.ui.strOr(u.result.latest, '—') + '）';
   }
   function updateStateChip(u) {
     if (u.downloading) return '<span class="chip chip-warn"><span class="spinner"></span>下载中</span>';
     if (u.checking) return '<span class="chip chip-warn"><span class="spinner"></span>检查中</span>';
-    if (u.error) return u.result ? chip('更新失败', 'neg', 'alert') : chip('检查失败', 'neg', 'alert');
-    if (!u.result) return chip('未检查', 'muted');
-    if (u.result.hasUpdate === true) return chip('有新版本', 'accent', 'download');
-    return chip('已是最新', 'pos', 'check');
+    if (u.error) return u.result ? FS.ui.chip('更新失败', 'neg', 'alert') : FS.ui.chip('检查失败', 'neg', 'alert');
+    if (!u.result) return FS.ui.chip('未检查', 'muted');
+    if (u.result.hasUpdate === true) return FS.ui.chip('有新版本', 'accent', 'download');
+    return FS.ui.chip('已是最新', 'pos', 'check');
   }
   function dataStoreCardHtml() {
     var d = state.datadir;
     var info = FS.info || {};
     var dataDir = FS.dataDir() || '';
-    var defaultDir = strOr(info.dataDirDefault, '');
+    var defaultDir = FS.ui.strOr(info.dataDirDefault, '');
     var custom = info.dataDirCustom === true;
-    var configPath = strOr(info.userConfigPath, '');
+    var configPath = FS.ui.strOr(info.userConfigPath, '');
     var canChoose = hasApi('chooseDataDir') && hasApi('migrateDataDir');
     var canReset = hasApi('resetDataDir');
     var busy = d.migrating || d.picking;
@@ -911,7 +857,7 @@
       body += '<p class="field-hint">桌面端可用（静态预览 / 浏览器直开时不支持更改数据目录）。</p>';
     }
     if (d.error) {
-      body += '<div style="margin-top:10px">' + bannerHtml('neg', 'alert', '数据目录操作失败', esc(d.error)) + '</div>';
+      body += '<div style="margin-top:10px">' + FS.ui.bannerHtml('neg', 'alert', '数据目录操作失败', esc(d.error)) + '</div>';
     }
     if (d.migrating) {
       body += progressBarHtml(d.progress ? d.progress.percent : null, d.progress ? d.progress.label : '准备迁移…');
@@ -929,7 +875,7 @@
         '<span class="sub">数据目录 / 迁移</span></div>' +
         '<div class="card-tools">' +
           (d.migrating ? '<span class="chip chip-warn"><span class="spinner"></span>迁移中</span>' : '') +
-          (custom ? chip('自定义目录', 'accent', 'folder') : chip('默认目录', 'muted', 'folder')) +
+          (custom ? FS.ui.chip('自定义目录', 'accent', 'folder') : FS.ui.chip('默认目录', 'muted', 'folder')) +
         '</div>' +
       '</div>' +
       '<div class="card-body">' + body + '</div>' +
@@ -950,20 +896,20 @@
       body += '<p class="field-hint" style="margin-top:10px">桌面端可用（静态预览 / 浏览器直开时不支持检查更新与下载安装包）。</p>';
     }
     if (u.error && apiReady) {
-      body += '<div style="margin-top:12px">' + bannerHtml('neg', 'alert', u.result ? '更新操作失败' : '检查更新失败', esc(u.error),
+      body += '<div style="margin-top:12px">' + FS.ui.bannerHtml('neg', 'alert', u.result ? '更新操作失败' : '检查更新失败', esc(u.error),
         '<button class="btn btn-sm btn-ghost" data-settings-act="check-update"' + (busy ? ' disabled' : '') + '>' + FS.icon('refresh') + '重试</button>') + '</div>';
     }
     var r = u.result;
     if (r && r.hasUpdate === false) {
       body += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px">' +
-        chip('已是最新版本 v' + strOr(r.latest, FS.versionLabel()), 'pos', 'check') +
-        '<span class="field-hint">最新 tag v' + esc(strOr(r.latest, '—')) + ' · 检查来源：' + esc(updateSourceLabel(r.source)) + '</span>' +
+        FS.ui.chip('已是最新版本 v' + FS.ui.strOr(r.latest, FS.versionLabel()), 'pos', 'check') +
+        '<span class="field-hint">最新 tag v' + esc(FS.ui.strOr(r.latest, '—')) + ' · 检查来源：' + esc(updateSourceLabel(r.source)) + '</span>' +
       '</div>';
     }
     if (r && r.hasUpdate === true) {
       body += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px">' +
-        chip('发现新版本 v' + strOr(r.latest, '—'), 'accent', 'download') +
-        '<span class="field-hint">当前 v' + esc(strOr(r.current, FS.versionLabel())) + ' → 最新 v' + esc(strOr(r.latest, '—')) +
+        FS.ui.chip('发现新版本 v' + FS.ui.strOr(r.latest, '—'), 'accent', 'download') +
+        '<span class="field-hint">当前 v' + esc(FS.ui.strOr(r.current, FS.versionLabel())) + ' → 最新 v' + esc(FS.ui.strOr(r.latest, '—')) +
           (r.publishedAt ? ' · 发布于 ' + esc(FS.fmtDateTime(r.publishedAt)) : '') +
           ' · 来源：' + esc(updateSourceLabel(r.source)) + '</span>' +
       '</div>';
@@ -985,7 +931,7 @@
       }
       body += '<div class="settings-actions actions-left">' + btns + '</div>';
       if (dl && dl.size) {
-        body += '<p class="field-hint" style="margin-top:8px">安装包：' + esc(strOr(dl.name, 'OpinionLens-Setup.exe')) + ' · ' + fmtMB(dl.size) + '</p>';
+        body += '<p class="field-hint" style="margin-top:8px">安装包：' + esc(FS.ui.strOr(dl.name, 'OpinionLens-Setup.exe')) + ' · ' + fmtMB(dl.size) + '</p>';
       }
     }
     if (u.downloading) {
@@ -996,7 +942,7 @@
     }
     if (u.downloadedPath) {
       body += '<div class="settings-actions actions-left">' +
-        chip('已下载（' + fmtMB(u.downloadedSize) + '）', 'pos', 'check') +
+        FS.ui.chip('已下载（' + fmtMB(u.downloadedSize) + '）', 'pos', 'check') +
         '<button class="btn btn-primary" data-settings-act="run-installer"' + (busy ? ' disabled' : '') + '>' + FS.icon('play') + '运行安装包</button>' +
       '</div>';
     }
@@ -1029,8 +975,8 @@
     var body =
       '<div class="form">' +
         '<div class="form-cols">' +
-          fieldHtml({ id: 'pf-name', label: '名称', value: p.name, placeholder: '例如：DeepSeek 官方 / 本地 Ollama' }) +
-          selectFieldHtml({
+          FS.ui.fieldHtml({ id: 'pf-name', label: '名称', value: p.name, placeholder: '例如：DeepSeek 官方 / 本地 Ollama' }) +
+          FS.ui.selectFieldHtml({
             id: 'pf-kind', label: '类型', value: kind,
             options: [
               { value: 'openai_compatible', label: 'OpenAI 兼容（含 Ollama / vLLM / 中转）' },
@@ -1041,8 +987,8 @@
           }) +
         '</div>' +
         '<div class="form-cols">' +
-          fieldHtml({ id: 'pf-base', label: 'Base URL', value: p.base_url, mono: true, placeholder: 'https://api.deepseek.com', hint: 'OpenAI 兼容填到 /v1 之前的根地址；DeepSeek 可留空使用官方默认。' }) +
-          fieldHtml({ id: 'pf-model', label: '模型名称', value: p.model, mono: true, placeholder: 'deepseek-chat', hint: '如 deepseek-chat / gpt-4o-mini / qwen2.5:7b。' }) +
+          FS.ui.fieldHtml({ id: 'pf-base', label: 'Base URL', value: p.base_url, mono: true, placeholder: 'https://api.deepseek.com', hint: 'OpenAI 兼容填到 /v1 之前的根地址；DeepSeek 可留空使用官方默认。' }) +
+          FS.ui.fieldHtml({ id: 'pf-model', label: '模型名称', value: p.model, mono: true, placeholder: 'deepseek-chat', hint: '如 deepseek-chat / gpt-4o-mini / qwen2.5:7b。' }) +
         '</div>' +
         secretFieldHtml({
           id: 'pf-key',
@@ -1110,7 +1056,7 @@
       loadModel(true);
     }).catch(function (err) {
       if (btn) { btn.disabled = false; btn.innerHTML = FS.icon('check') + '保存'; }
-      FS.toast({ tone: 'error', title: editing ? '保存模型 API 失败' : '创建模型 API 失败', text: apiErrNote(err) });
+      FS.toast({ tone: 'error', title: editing ? '保存模型 API 失败' : '创建模型 API 失败', text: FS.ui.apiErrNote(err) });
     });
   }
   function testProvider(id) {
@@ -1125,11 +1071,11 @@
         reply: res && res.reply,
         error: res && res.error
       };
-      if (res && res.ok) FS.toast({ tone: 'success', title: '模型连接正常', text: (res.latency_ms !== null && res.latency_ms !== undefined ? Math.round(numOr(res.latency_ms, 0)) + 'ms' : '') + (res.reply ? ' · ' + res.reply : '') });
+      if (res && res.ok) FS.toast({ tone: 'success', title: '模型连接正常', text: (res.latency_ms !== null && res.latency_ms !== undefined ? Math.round(FS.ui.numOr(res.latency_ms, 0)) + 'ms' : '') + (res.reply ? ' · ' + res.reply : '') });
       else FS.toast({ tone: 'warn', title: '模型连接失败', text: (res && res.error) || '请检查 Base URL / 模型名 / API Key' });
     }).catch(function (err) {
-      state.llm.testResults[id] = { ok: false, error: apiErrNote(err, '测试连接失败') };
-      FS.toast({ tone: 'error', title: '测试连接失败', text: apiErrNote(err) });
+      state.llm.testResults[id] = { ok: false, error: FS.ui.apiErrNote(err, '测试连接失败') };
+      FS.toast({ tone: 'error', title: '测试连接失败', text: FS.ui.apiErrNote(err) });
     }).finally(function () {
       delete state.llm.testing[id];
       state.llm.loaded = false;
@@ -1143,7 +1089,7 @@
       state.llm.loaded = false;
       loadModel(true);
     }).catch(function (err) {
-      FS.toast({ tone: 'error', title: '设为默认失败', text: apiErrNote(err) });
+      FS.toast({ tone: 'error', title: '设为默认失败', text: FS.ui.apiErrNote(err) });
     });
   }
   function deleteProvider(id) {
@@ -1160,7 +1106,7 @@
           state.llm.loaded = false;
           loadModel(true);
         }).catch(function (err) {
-          FS.toast({ tone: 'error', title: '删除模型 API 失败', text: apiErrNote(err) });
+          FS.toast({ tone: 'error', title: '删除模型 API 失败', text: FS.ui.apiErrNote(err) });
         });
       }
     });
@@ -1186,7 +1132,7 @@
       }
       FS.toast({ tone: 'success', title: doneTitle || '通知设置已保存' });
     }).catch(function (err) {
-      FS.toast({ tone: 'error', title: '保存通知设置失败', text: apiErrNote(err) });
+      FS.toast({ tone: 'error', title: '保存通知设置失败', text: FS.ui.apiErrNote(err) });
     }).finally(function () {
       state.notify.saving = false;
       state.notify.loaded = false;
@@ -1225,7 +1171,7 @@
       if (!found) state.notify.rules.push(merged);
       FS.toast({ tone: enabled ? 'success' : 'info', title: (enabled ? '已订阅：' : '已退订：') + (EVENT_LABELS[eventType] || eventType), duration: 2000 });
     }).catch(function (err) {
-      FS.toast({ tone: 'error', title: '更新事件订阅失败', text: apiErrNote(err) });
+      FS.toast({ tone: 'error', title: '更新事件订阅失败', text: FS.ui.apiErrNote(err) });
       renderPanelIfActive('notify');
     });
   }
@@ -1246,7 +1192,7 @@
       state.notify.loaded = false;
       loadNotify(true);
     }).catch(function (err) {
-      FS.toast({ tone: 'error', title: '更新通道状态失败', text: apiErrNote(err) });
+      FS.toast({ tone: 'error', title: '更新通道状态失败', text: FS.ui.apiErrNote(err) });
       renderPanelIfActive('notify');
     });
   }
@@ -1262,11 +1208,11 @@
         http_status: res && res.http_status,
         error: res && res.error
       };
-      if (res && res.ok) FS.toast({ tone: 'success', title: '测试消息已发送', text: res.latency_ms ? Math.round(numOr(res.latency_ms, 0)) + 'ms' : '' });
+      if (res && res.ok) FS.toast({ tone: 'success', title: '测试消息已发送', text: res.latency_ms ? Math.round(FS.ui.numOr(res.latency_ms, 0)) + 'ms' : '' });
       else FS.toast({ tone: 'warn', title: '测试发送失败', text: (res && res.error) || '请检查通道配置' });
     }).catch(function (err) {
-      state.notify.testResults[id] = { ok: false, error: apiErrNote(err) };
-      FS.toast({ tone: 'error', title: '测试发送失败', text: apiErrNote(err) });
+      state.notify.testResults[id] = { ok: false, error: FS.ui.apiErrNote(err) };
+      FS.toast({ tone: 'error', title: '测试发送失败', text: FS.ui.apiErrNote(err) });
     }).finally(function () {
       delete state.notify.testing[id];
       state.notify.loaded = false;
@@ -1282,7 +1228,7 @@
       if (res && res.ok) FS.toast({ tone: 'success', title: '测试消息已发送到全部启用通道' });
       else FS.toast({ tone: 'warn', title: '部分通道测试失败', text: (res && res.error) || (failed ? failed + ' 个通道失败，请查看发送记录' : '请检查通道配置') });
     }).catch(function (err) {
-      FS.toast({ tone: 'error', title: '测试发送失败', text: apiErrNote(err) });
+      FS.toast({ tone: 'error', title: '测试发送失败', text: FS.ui.apiErrNote(err) });
     }).finally(function () {
       state.notify.testing.all = false;
       state.notify.loaded = false;
@@ -1296,7 +1242,7 @@
       state.notify.loaded = false;
       loadNotify(true);
     }).catch(function (err) {
-      FS.toast({ tone: 'error', title: '重试失败', text: apiErrNote(err) });
+      FS.toast({ tone: 'error', title: '重试失败', text: FS.ui.apiErrNote(err) });
     });
   }
   function deleteChannel(id) {
@@ -1312,7 +1258,7 @@
           state.notify.loaded = false;
           loadNotify(true);
         }).catch(function (err) {
-          FS.toast({ tone: 'error', title: '删除通道失败', text: apiErrNote(err) });
+          FS.toast({ tone: 'error', title: '删除通道失败', text: FS.ui.apiErrNote(err) });
         });
       }
     });
@@ -1324,19 +1270,19 @@
     var f = [];
     if (type === 'smtp') {
       f.push('<div class="form-cols">' +
-        fieldHtml({ id: 'ch-host', label: 'SMTP 服务器', value: cfg.host || '', placeholder: 'smtp.qq.com', hint: '例如 smtp.qq.com / smtp.163.com / smtp.exmail.qq.com' }) +
-        fieldHtml({ id: 'ch-port', label: '端口', value: cfg.port || 465, type: 'number', attrs: ' min="1" max="65535"' }) +
+        FS.ui.fieldHtml({ id: 'ch-host', label: 'SMTP 服务器', value: cfg.host || '', placeholder: 'smtp.qq.com', hint: '例如 smtp.qq.com / smtp.163.com / smtp.exmail.qq.com' }) +
+        FS.ui.fieldHtml({ id: 'ch-port', label: '端口', value: cfg.port || 465, type: 'number', attrs: ' min="1" max="65535"' }) +
         '</div>');
       f.push('<div class="form-cols">' +
-        selectFieldHtml({
+        FS.ui.selectFieldHtml({
           id: 'ch-security', label: '加密方式', value: cfg.security || 'ssl',
           options: [{ value: 'ssl', label: 'SSL（465）' }, { value: 'starttls', label: 'STARTTLS（587）' }, { value: 'none', label: '无加密（内网）' }]
         }) +
-        fieldHtml({ id: 'ch-username', label: '用户名', value: cfg.username || '', placeholder: '通常与发件人邮箱相同', hint: '留空则匿名发信（多数服务商不允许）。' }) +
+        FS.ui.fieldHtml({ id: 'ch-username', label: '用户名', value: cfg.username || '', placeholder: '通常与发件人邮箱相同', hint: '留空则匿名发信（多数服务商不允许）。' }) +
         '</div>');
       f.push('<div class="form-cols">' +
-        fieldHtml({ id: 'ch-from', label: '发件人', value: cfg.from || '', placeholder: 'monitor@example.com' }) +
-        fieldHtml({ id: 'ch-to', label: '收件人', value: Array.isArray(cfg.to) ? cfg.to.join(', ') : strOr(cfg.to, ''), placeholder: 'a@example.com, b@example.com', hint: '多个收件人用逗号分隔。' }) +
+        FS.ui.fieldHtml({ id: 'ch-from', label: '发件人', value: cfg.from || '', placeholder: 'monitor@example.com' }) +
+        FS.ui.fieldHtml({ id: 'ch-to', label: '收件人', value: Array.isArray(cfg.to) ? cfg.to.join(', ') : FS.ui.strOr(cfg.to, ''), placeholder: 'a@example.com, b@example.com', hint: '多个收件人用逗号分隔。' }) +
         '</div>');
       f.push(secretFieldHtml({
         id: 'ch-secret', label: '授权码 / 密码',
@@ -1346,13 +1292,13 @@
       }));
     } else if (type === 'bark') {
       f.push('<div class="form-cols">' +
-        fieldHtml({ id: 'ch-server', label: '服务器地址', value: cfg.server_url || '', placeholder: 'https://api.day.app', hint: '使用官方服务可留空；自建 Bark 服务填完整 https 地址。' }) +
-        selectFieldHtml({
+        FS.ui.fieldHtml({ id: 'ch-server', label: '服务器地址', value: cfg.server_url || '', placeholder: 'https://api.day.app', hint: '使用官方服务可留空；自建 Bark 服务填完整 https 地址。' }) +
+        FS.ui.selectFieldHtml({
           id: 'ch-level', label: '通知级别', value: cfg.level || 'active',
           options: [{ value: 'active', label: 'active（默认）' }, { value: 'timeSensitive', label: 'timeSensitive（时效）' }, { value: 'critical', label: 'critical（强提醒）' }, { value: 'passive', label: 'passive（静默）' }]
         }) +
-        fieldHtml({ id: 'ch-group', label: '分组', value: cfg.group || '', placeholder: '可选，例如 舆情监测' }) +
-        fieldHtml({ id: 'ch-sound', label: '提示音', value: cfg.sound || '', placeholder: '可选，例如 minuet' }) +
+        FS.ui.fieldHtml({ id: 'ch-group', label: '分组', value: cfg.group || '', placeholder: '可选，例如 舆情监测' }) +
+        FS.ui.fieldHtml({ id: 'ch-sound', label: '提示音', value: cfg.sound || '', placeholder: '可选，例如 minuet' }) +
         '</div>');
       f.push(secretFieldHtml({
         id: 'ch-secret', label: 'Device Key',
@@ -1390,11 +1336,11 @@
     var body =
       '<div class="form">' +
         '<div class="form-cols">' +
-          fieldHtml({ id: 'ch-name', label: '通道名称', value: channel ? channel.name : '', placeholder: '例如：运维群机器人 / 我的邮箱' }) +
+          FS.ui.fieldHtml({ id: 'ch-name', label: '通道名称', value: channel ? channel.name : '', placeholder: '例如：运维群机器人 / 我的邮箱' }) +
           (editing
             ? '<div class="field"><label class="field-label">通道类型</label><div class="readonly-box">' + FS.icon(channelTypeMeta(type).icon) + '<span>' + esc(channelTypeLabel(type)) + '</span></div>' +
               '<div class="field-hint">类型创建后不可修改；如需更换请删除后重新添加。</div></div>'
-            : selectFieldHtml({
+            : FS.ui.selectFieldHtml({
                 id: 'ch-type', label: '通道类型', value: type,
                 options: CHANNEL_TYPES.map(function (t) { return { value: t.id, label: t.label + ' · ' + t.desc }; }),
                 hint: '选择类型后填写对应配置。'
@@ -1443,7 +1389,7 @@
       var security = String(valOf(el, '#ch-security') || 'ssl');
       config = {
         host: host,
-        port: numOr(valOf(el, '#ch-port'), security === 'ssl' ? 465 : 587),
+        port: FS.ui.numOr(valOf(el, '#ch-port'), security === 'ssl' ? 465 : 587),
         security: security,
         username: username,
         from: from,
@@ -1479,7 +1425,7 @@
       loadNotify(true);
     }).catch(function (err) {
       if (btn) { btn.disabled = false; btn.innerHTML = FS.icon('check') + '保存'; }
-      FS.toast({ tone: 'error', title: editing ? '保存通道失败' : '创建通道失败', text: apiErrNote(err) });
+      FS.toast({ tone: 'error', title: editing ? '保存通道失败' : '创建通道失败', text: FS.ui.apiErrNote(err) });
     });
   }
   function valOf(el, sel) {
@@ -1493,10 +1439,10 @@
     if (!main) return;
     var body = {
       default_strategy: String(valOf(main, '#pool-strategy') || 'lru'),
-      platform_min_interval_s: Math.max(0, Math.round(numOr(valOf(main, '#pool-interval'), 30))),
+      platform_min_interval_s: Math.max(0, Math.round(FS.ui.numOr(valOf(main, '#pool-interval'), 30))),
       limits: {
-        daily_runs: Math.max(1, Math.round(numOr(valOf(main, '#pool-runs'), 20))),
-        daily_saved_items: Math.max(0, Math.round(numOr(valOf(main, '#pool-items'), 2000)))
+        daily_runs: Math.max(1, Math.round(FS.ui.numOr(valOf(main, '#pool-runs'), 20))),
+        daily_saved_items: Math.max(0, Math.round(FS.ui.numOr(valOf(main, '#pool-items'), 2000)))
       }
     };
     state.pool.saving = true;
@@ -1505,7 +1451,7 @@
       state.pool.settings = body;
       FS.toast({ tone: 'success', title: '账号池设置已保存' });
     }).catch(function (err) {
-      FS.toast({ tone: 'error', title: '保存账号池设置失败', text: apiErrNote(err) });
+      FS.toast({ tone: 'error', title: '保存账号池设置失败', text: FS.ui.apiErrNote(err) });
     }).finally(function () {
       state.pool.saving = false;
       state.pool.loaded = false;
@@ -1555,8 +1501,8 @@
     try {
       var off = window.fsapi.onUpdateProgress(function (p) {
         if (!p) return;
-        var percent = (p.percent === null || p.percent === undefined) ? null : numOr(p.percent, 0);
-        state.update.progress = { received: numOr(p.received, 0), total: numOr(p.total, 0), percent: percent };
+        var percent = (p.percent === null || p.percent === undefined) ? null : FS.ui.numOr(p.percent, 0);
+        state.update.progress = { received: FS.ui.numOr(p.received, 0), total: FS.ui.numOr(p.total, 0), percent: percent };
         renderPanelIfActive('about');
       });
       unsubUpdateProgress = typeof off === 'function' ? off : null;
@@ -1581,7 +1527,7 @@
       var out = res || {};
       if (out.ok === false) {
         st.result = null;
-        st.error = strOr(out.error, '检查更新失败');
+        st.error = FS.ui.strOr(out.error, '检查更新失败');
         return;
       }
       st.result = out;
@@ -1590,9 +1536,9 @@
       st.downloadedSize = 0;
       st.progress = null;
       if (out.hasUpdate === true) {
-        FS.toast({ tone: 'info', title: '发现新版本 v' + strOr(out.latest, ''), text: '可在「软件更新」卡片中下载安装包。', duration: 5200 });
+        FS.toast({ tone: 'info', title: '发现新版本 v' + FS.ui.strOr(out.latest, ''), text: '可在「软件更新」卡片中下载安装包。', duration: 5200 });
       } else {
-        FS.toast({ tone: 'success', title: '已是最新版本 v' + strOr(out.latest, FS.versionLabel()) });
+        FS.toast({ tone: 'success', title: '已是最新版本 v' + FS.ui.strOr(out.latest, FS.versionLabel()) });
       }
     }).catch(function (err) {
       st.result = null;
@@ -1616,18 +1562,18 @@
     st.error = '';
     st.downloadedPath = '';
     st.downloadedSize = 0;
-    st.progress = { received: 0, total: numOr(dl.size, 0), percent: 0 };
+    st.progress = { received: 0, total: FS.ui.numOr(dl.size, 0), percent: 0 };
     startUpdateProgress();
     renderPanelIfActive('about');
-    window.fsapi.downloadUpdate({ url: dl.url, name: strOr(dl.name, '') }).then(function (res) {
+    window.fsapi.downloadUpdate({ url: dl.url, name: FS.ui.strOr(dl.name, '') }).then(function (res) {
       var out = res || {};
       if (out.ok === false) {
-        st.error = strOr(out.error, '下载安装包失败');
+        st.error = FS.ui.strOr(out.error, '下载安装包失败');
         FS.toast({ tone: 'error', title: '下载安装包失败', text: st.error });
         return;
       }
-      st.downloadedPath = strOr(out.path, '');
-      st.downloadedSize = numOr(out.size, numOr(dl.size, 0));
+      st.downloadedPath = FS.ui.strOr(out.path, '');
+      st.downloadedSize = FS.ui.numOr(out.size, FS.ui.numOr(dl.size, 0));
       FS.toast({ tone: 'success', title: '安装包已下载', text: fmtMB(st.downloadedSize) + '，可点「运行安装包」继续。' });
     }).catch(function (err) {
       st.error = FS.errText(err, '下载安装包失败');
@@ -1651,7 +1597,7 @@
         window.fsapi.runUpdateInstaller(filePath).then(function (res) {
           var out = res || {};
           if (out.ok === false) {
-            FS.toast({ tone: 'error', title: '无法运行安装包', text: strOr(out.error, '系统拒绝运行该文件') });
+            FS.toast({ tone: 'error', title: '无法运行安装包', text: FS.ui.strOr(out.error, '系统拒绝运行该文件') });
             return;
           }
           FS.toast({ tone: 'success', title: '已启动安装包', text: '按安装向导完成后重新打开应用。' });
@@ -1680,8 +1626,8 @@
     try {
       var off = window.fsapi.onDataDirProgress(function (p) {
         if (!p) return;
-        var percent = (p.percent === null || p.percent === undefined) ? null : numOr(p.percent, 0);
-        state.datadir.progress = { step: strOr(p.step, ''), label: strOr(p.label, ''), percent: percent };
+        var percent = (p.percent === null || p.percent === undefined) ? null : FS.ui.numOr(p.percent, 0);
+        state.datadir.progress = { step: FS.ui.strOr(p.step, ''), label: FS.ui.strOr(p.label, ''), percent: percent };
         renderPanelIfActive('about');
       });
       unsubDataDirProgress = typeof off === 'function' ? off : null;
@@ -1695,11 +1641,11 @@
     unsubDataDirProgress = null;
   }
   function dataDirErrorText(res) {
-    var code = strOr(res && res.code, '');
+    var code = FS.ui.strOr(res && res.code, '');
     if (code === 'DATA_TARGET_OCCUPIED') return '目标目录已有 OpinionLens 数据（app.db），请选择空目录';
     if (code === 'DATA_TARGET_NOT_WRITABLE') return '目标目录不可写，请换一个有写入权限的目录';
-    if (code === 'DATA_MIGRATE_FAILED') return strOr(res && res.error, '迁移失败，旧目录未受影响，请稍后重试');
-    return strOr(res && res.error, '迁移数据目录失败');
+    if (code === 'DATA_MIGRATE_FAILED') return FS.ui.strOr(res && res.error, '迁移失败，旧目录未受影响，请稍后重试');
+    return FS.ui.strOr(res && res.error, '迁移数据目录失败');
   }
   function chooseDataDir() {
     var st = state.datadir;
@@ -1711,7 +1657,7 @@
     window.fsapi.chooseDataDir().then(function (res) {
       var out = res || {};
       if (!out.ok) {
-        if (!out.canceled) st.error = strOr(out.error, '选择目录失败');
+        if (!out.canceled) st.error = FS.ui.strOr(out.error, '选择目录失败');
         return;
       }
       var target = String(out.path || '').trim();
@@ -1749,7 +1695,7 @@
         return;
       }
       st.progress = { step: 'restarting', label: '重启应用…', percent: 100 };
-      FS.toast({ tone: 'success', title: '已迁移到 ' + strOr(out.target, target), text: '正在重启…', duration: 6000 });
+      FS.toast({ tone: 'success', title: '已迁移到 ' + FS.ui.strOr(out.target, target), text: '正在重启…', duration: 6000 });
     }).catch(function (err) {
       st.error = FS.errText(err, '迁移数据目录失败');
       FS.toast({ tone: 'error', title: '迁移数据目录失败', text: st.error });
@@ -1765,7 +1711,7 @@
     if (st.migrating) return;
     if (!hasApi('resetDataDir')) { previewApiToast('当前环境不支持恢复默认目录'); return; }
     var info = FS.info || {};
-    var defaultDir = strOr(info.dataDirDefault, '%APPDATA%\\OpinionLens');
+    var defaultDir = FS.ui.strOr(info.dataDirDefault, '%APPDATA%\\OpinionLens');
     FS.confirm({
       title: '恢复默认数据目录',
       text: '将数据目录恢复为默认的 ' + defaultDir + ' 并重启应用。当前自定义目录中的文件不会被删除（需要时可先手动复制到默认目录）。是否继续？',
@@ -1779,7 +1725,7 @@
         window.fsapi.resetDataDir().then(function (res) {
           var out = res || {};
           if (out.ok === false) {
-            st.error = strOr(out.error, '恢复默认目录失败');
+            st.error = FS.ui.strOr(out.error, '恢复默认目录失败');
             FS.toast({ tone: 'error', title: '恢复默认目录失败', text: st.error });
             return;
           }

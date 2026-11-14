@@ -880,12 +880,12 @@
   }
   function startConnectionWatch() {
     stopConnectionWatch();
-    state.connectionTimer = setInterval(function () {
+    state.connectionTimer = FS.timers.every(function () {
       if (viewEl && FS.currentView === FS.views.reports) loadConnection(true);
-    }, 30000);
+    }, 30000, 'reports-conn-watch');
   }
   function stopConnectionWatch() {
-    if (state.connectionTimer) { clearInterval(state.connectionTimer); state.connectionTimer = null; }
+    if (state.connectionTimer) { FS.timers.clear(state.connectionTimer); state.connectionTimer = null; }
   }
 
   function loadReports(silent) {
@@ -920,11 +920,11 @@
     if (state.pollTimer) { clearTimeout(state.pollTimer); state.pollTimer = null; }
   }
   function stopTicker() {
-    if (state.tickTimer) { clearInterval(state.tickTimer); state.tickTimer = null; }
+    if (state.tickTimer) { FS.timers.clear(state.tickTimer); state.tickTimer = null; }
   }
   function ensureTicker() {
     if (state.tickTimer) return;
-    state.tickTimer = setInterval(updateElapsed, 1000);
+    state.tickTimer = FS.timers.every(updateElapsed, 1000, 'reports-elapsed');
   }
   function updateElapsed() {
     var el = viewEl && viewEl.querySelector('[data-report-elapsed]');

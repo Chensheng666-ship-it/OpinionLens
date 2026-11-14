@@ -2,7 +2,8 @@
    舆见 OpinionLens · Renderer 内核
    - 外壳：侧边导航 / 顶部状态栏 / 全局横幅 / Toast / 弹窗
    - 连接：window.fsapi.getInfo() → sidecar Bearer 鉴权；未就绪时展示引导页
-   - 静态预览：无 Electron preload 时使用 preview.js 的 Mock 适配器
+   - 静态预览：无 Electron preload（或显式 ?preview=1）时按需加载 preview.js 的 Mock 适配器
+   - 定时器：FS.timers 统一登记，切页 clearAll（跨页连接心跳用 label 白名单豁免）
    ========================================================================== */
 (function () {
   'use strict';
@@ -113,6 +114,49 @@
     if (err.kind === 'auth') return '鉴权失败：' + msg;
     return msg || fallback || '未知错误';
   };
+
+  /* ======================================================================
+     定时器注册表（P2：统一管理，切页不遗留 interval）
+     - every/after 返回登记 id；clear 清单个；clearAll 在 FS.applyPage 切页时调用
+     - 跨页面常驻的定时器用 label 白名单豁免（见 TIMER_KEEP_LABELS），避免切页打断
+       连接心跳 / 断线重连这类与页面无关的流程
+     ====================================================================== */
+  var TIMER_KEEP_LABELS = {
+    'conn-health': true,       // 本地服务心跳（8s）：与页面无关，全局常驻
+    'conn-loss-retry': true,   // 断线后自动重连（4s）：横幅/引导页都在等它
+    'conn-countdown': true,    // 未就绪页倒计时（1s）：离线时切页仍要继续倒数
+    'conn-retry': true         // 离线自动重试（3s 一次性）：切页后仍须触发重连
+  };
+  var timerSeq = 0;
+  var timerRecords = {};       // id -> { handle, kind, label }
+  FS.timers = Object.freeze({
+    every: function (fn, ms, label) {
+      return timerTrack(setInterval(fn, ms), 'every', label);
+    },
+    after: function (fn, ms, label) {
+      return timerTrack(setTimeout(fn, ms), 'after', label);
+    },
+    clear: function (id) {
+      var rec = id && timerRecords[id];
+      if (!rec) return;
+      if (rec.kind === 'every') clearInterval(rec.handle); else clearTimeout(rec.handle);
+      delete timerRecords[id];
+    },
+    clearAll: function () {
+      Object.keys(timerRecords).forEach(function (key) {
+        var rec = timerRecords[key];
+        if (rec && TIMER_KEEP_LABELS[rec.label]) return;
+        FS.timers.clear(Number(key));
+      });
+    },
+    isPersistent: function (label) { return !!TIMER_KEEP_LABELS[label]; },
+    size: function () { return Object.keys(timerRecords).length; }
+  });
+  function timerTrack(handle, kind, label) {
+    timerSeq += 1;
+    timerRecords[timerSeq] = { handle: handle, kind: kind, label: label || '' };
+    return timerSeq;
+  }
 
   /* ======================================================================
      Toast
@@ -472,6 +516,8 @@
       try { FS.currentView.destroy(); } catch (e) { /* noop */ }
     }
     FS.currentView = null;
+    /* 页面切走：一次性清掉该页登记的所有定时器（连接类心跳按 label 白名单保留） */
+    FS.timers.clearAll();
     FS.page = page;
     FS.setPageMeta();
     var viewEl = $('#view');
@@ -569,21 +615,57 @@
     FS.setSidebarService();
   }
 
+  /* ======================================================================
+     静态预览按需加载（P0-4）
+     preview.js 是 112 KB 假数据，正式运行（有 preload）零成本；
+     只有「无 window.fsapi」或显式 index.html?preview=1 时才动态插入并等它 ready。
+     ====================================================================== */
+  function previewRequested() {
+    try {
+      return new URLSearchParams(window.location.search || '').get('preview') === '1';
+    } catch (e) { return false; }
+  }
+  function loadPreviewScript() {
+    return new Promise(function (resolve, reject) {
+      if (FS.PreviewApi) { resolve(FS.PreviewApi); return; }
+      var script = document.createElement('script');
+      script.src = 'preview.js';
+      script.async = false;
+      script.onload = function () {
+        if (FS.PreviewApi) resolve(FS.PreviewApi);
+        else reject(new Error('preview.js 已加载，但未注册 FS.PreviewApi'));
+      };
+      script.onerror = function () { reject(new Error('preview.js 加载失败')); };
+      document.head.appendChild(script);
+    });
+  }
+
   FS.boot = async function () {
     FS.page = FS.pageFromHash();
     FS.setPageMeta();
     FS.renderTopbar();
     FS.setSidebarService();
 
-    if (!window.fsapi) {
-      // 静态预览：无 Electron preload，使用本地 Mock 适配器
+    if (!window.fsapi || previewRequested()) {
+      // 静态预览：无 Electron preload（或 ?preview=1 强制预览）→ 动态加载本地 Mock 适配器
       FS.previewMode = true;
       FS.mode = 'preview';
-      FS.api = FS.PreviewApi;
-      FS.info = FS.PreviewInfo;
       FS.connectAttempts = 0;
       FS.setSidebarService();
       FS.renderTopbar();
+      try {
+        await loadPreviewScript();
+      } catch (e) {
+        FS.mode = 'offline';
+        FS.previewMode = false;
+        FS.lastError = '静态预览数据加载失败：' + (e && e.message ? e.message : String(e));
+        FS.setSidebarService();
+        FS.renderTopbar();
+        FS.applyPage(FS.page);
+        return;
+      }
+      FS.api = FS.PreviewApi;
+      FS.info = FS.PreviewInfo;
       try {
         var results = await Promise.all([FS.api.getConfig(), FS.api.systemInfo()]);
         FS.config = results[0];
@@ -603,7 +685,8 @@
   };
 
   FS.connectElectron = async function (isRetry) {
-    clearTimeout(FS.retryTimer);
+    FS.timers.clear(FS.retryTimer);
+    FS.retryTimer = null;
     try {
       if (!FS.info) {
         if (!window.fsapi || !window.fsapi.getInfo) throw new Error('preload 未暴露 window.fsapi.getInfo');
@@ -649,22 +732,28 @@
   };
 
   function scheduleRetry() {
-    clearTimeout(FS.retryTimer);
+    FS.timers.clear(FS.retryTimer);
+    FS.retryTimer = null;
     FS.retryAt = Date.now() + 3000;
-    clearInterval(FS.retryCountdownTimer);
-    FS.retryCountdownTimer = setInterval(function () {
-      if (FS.mode !== 'offline') { clearInterval(FS.retryCountdownTimer); return; }
+    FS.timers.clear(FS.retryCountdownTimer);
+    FS.retryCountdownTimer = FS.timers.every(function () {
+      if (FS.mode !== 'offline') {
+        FS.timers.clear(FS.retryCountdownTimer);
+        FS.retryCountdownTimer = null;
+        return;
+      }
       updateReadinessRetry();
-    }, 1000);
-    FS.retryTimer = setTimeout(function () {
+    }, 1000, 'conn-countdown');
+    FS.retryTimer = FS.timers.after(function () {
       if (FS.mode === 'offline') FS.reconnect();
-    }, 3000);
+    }, 3000, 'conn-retry');
   }
 
   FS.reconnect = async function (manual) {
     if (FS.mode !== 'offline' && FS.mode !== 'boot' && !manual) return;
     if (FS.mode !== 'offline') FS.mode = 'connecting';
-    clearTimeout(FS.retryTimer);
+    FS.timers.clear(FS.retryTimer);
+    FS.retryTimer = null;
     FS.renderTopbar();
     FS.setSidebarService();
     var ok = await FS.connectElectron(true);
@@ -672,15 +761,15 @@
   };
 
   function startHealthMonitor() {
-    clearInterval(FS.healthTimer);
-    FS.healthTimer = setInterval(async function () {
+    FS.timers.clear(FS.healthTimer);
+    FS.healthTimer = FS.timers.every(async function () {
       if (FS.mode !== 'real' || FS.connectionLost) return;
       try {
         await FS.api.health();
       } catch (e) {
         markConnectionLost(e);
       }
-    }, 8000);
+    }, 8000, 'conn-health');
   }
 
   function markConnectionLost(err) {
@@ -696,8 +785,8 @@
       'warn');
     var retryBtn = $('#banner-retry');
     if (retryBtn) retryBtn.addEventListener('click', function () { retryAfterLoss(); });
-    clearInterval(FS.lossRetryTimer);
-    FS.lossRetryTimer = setInterval(function () { retryAfterLoss(); }, 4000);
+    FS.timers.clear(FS.lossRetryTimer);
+    FS.lossRetryTimer = FS.timers.every(function () { retryAfterLoss(); }, 4000, 'conn-loss-retry');
   }
 
   async function retryAfterLoss() {
@@ -706,7 +795,8 @@
       await FS.api.health();
       FS.connectionLost = false;
       FS.lastError = '';
-      clearInterval(FS.lossRetryTimer);
+      FS.timers.clear(FS.lossRetryTimer);
+      FS.lossRetryTimer = null;
       FS.clearBanner();
       FS.setSidebarService();
       FS.renderTopbar();
@@ -723,6 +813,8 @@
   FS.openFile = async function (filePath) {
     if (!filePath) { FS.toast({ tone: 'warn', title: '文件路径为空' }); return; }
     try {
+      /* 预览模式（含 Electron 下 ?preview=1）不走真实 IPC，保持 mock 口径 */
+      if (FS.previewMode) { FS.toast({ tone: 'info', title: '静态预览', text: 'Electron 环境下将调用系统默认程序打开：' + FS.shortPath(filePath, 60) }); return; }
       if (window.fsapi && typeof window.fsapi.openPath === 'function') {
         var res = await window.fsapi.openPath(filePath);
         // preload 返回 {ok, error, path}；兼容旧契约的字符串返回值（非空表示错误）
@@ -731,7 +823,6 @@
         FS.toast({ tone: 'success', title: '已打开文件', text: FS.shortPath(filePath, 60) });
         return;
       }
-      if (FS.previewMode) { FS.toast({ tone: 'info', title: '静态预览', text: 'Electron 环境下将调用系统默认程序打开：' + FS.shortPath(filePath, 60) }); return; }
       await FS.api.systemOpenFile(filePath);
       FS.toast({ tone: 'success', title: '已请求系统打开文件', text: FS.shortPath(filePath, 60) });
     } catch (e) {
@@ -742,13 +833,13 @@
   FS.openFolder = async function (filePath) {
     if (!filePath) { FS.toast({ tone: 'warn', title: '文件路径为空' }); return; }
     try {
+      if (FS.previewMode) { FS.toast({ tone: 'info', title: '静态预览', text: 'Electron 环境下将打开文件所在文件夹。' }); return; }
       if (window.fsapi && typeof window.fsapi.showItemInFolder === 'function') {
         var res = await window.fsapi.showItemInFolder(filePath);
         if (res && typeof res === 'object' && res.ok === false) throw new Error(res.error || '系统拒绝打开文件夹');
         FS.toast({ tone: 'success', title: '已在资源管理器中定位文件' });
         return;
       }
-      if (FS.previewMode) { FS.toast({ tone: 'info', title: '静态预览', text: 'Electron 环境下将打开文件所在文件夹。' }); return; }
       FS.toast({ tone: 'warn', title: '当前环境不支持打开文件夹', text: '请使用「打开文件」或通过系统资源管理器查看。' });
     } catch (e) {
       FS.toast({ tone: 'error', title: '打开文件夹失败', text: FS.errText(e) });

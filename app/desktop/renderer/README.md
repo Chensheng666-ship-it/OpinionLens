@@ -9,8 +9,9 @@
 | `index.html` | 应用外壳：左侧四页导航（平台账号/采集任务/报告中心/设置）、顶部状态栏、全局 Toast/弹窗容器、内联 SVG 图标 sprite |
 | `styles.css` | 设计变量与全部样式（墨色侧栏 + 温暖纸白 + 铜色强调）；EOF 追加设置页/多账号池/任务账号策略样式块 |
 | `api.js` | sidecar REST 客户端（Bearer 鉴权、超时、错误归一化）；含 `FS.Api.llm / notify / pool / appSettings` 扩展命名空间 |
-| `preview.js` | 静态预览适配器：无 Electron preload 时使用本地 Mock（含模型 API/通知/多账号池 mock，便于浏览器直开评审） |
-| `app.js` | 启动/连接编排、顶部状态栏、路由、Toast/弹窗、服务未就绪引导页、打开文件 IPC |
+| `ui-kit.js` | 通用 UI 小工具（`FS.ui.*`）：`apiErrNote / numOr / strOr / chip / bannerHtml / skeletonCardHtml / skeletonLines / fieldHtml / selectFieldHtml`；加载顺序在 `app.js` 之后、页面模块之前 |
+| `preview.js` | 静态预览适配器：**按需加载**，仅「无 Electron preload」或显式 `index.html?preview=1` 时由 `app.js` 动态插入，正式运行不解析（含模型 API/通知/多账号池 mock，便于浏览器直开评审） |
+| `app.js` | 启动/连接编排、顶部状态栏、路由、Toast/弹窗、服务未就绪引导页、打开文件 IPC；`FS.timers`（`every/after/clear/clearAll`）统一定时器，切页 `clearAll` |
 | `accounts.js` | 平台账号页：平台分组多账号卡片（别名/状态/健康度/配额/默认星标）、新增账号、扫码登录（弹窗二维码 + 1.5s 轮询）、测试连接、启停、设默认、编辑别名、软删除、一键全部检测（并发 ≤2）；pool 接口 404 时回退旧版单账号展示 |
 | `tasks.js` | 采集任务页：新建表单（关键词/平台/账号策略·自动选号或指定账号）、任务列表、运行详情（进度轮询 + 账号别名/切号记录 + 采集动态内容流 + 技术日志）、停止、续采、导出 Excel |
 | `reports.js` | 报告中心：周报表单、生成进度轮询、完成详情/HTML 打开、修订、历史列表、模型 API 未配置/未连接引导 |
@@ -20,6 +21,21 @@
 
 正常：在 `app/desktop` 执行 `npm start`（Electron 会拉起 sidecar；renderer 通过 `window.fsapi.getInfo()` 获取 baseUrl/token）。
 调试 UI：`index.html` 也可直接双击打开，此时无 `window.fsapi`，自动进入**静态预览模式**（Mock 数据、横幅提示，不发任何网络请求）。
+静态预览用到的 `preview.js`（112 KB mock）已按需加载：正式运行时不会请求/解析它；Electron 下想看预览页可加查询参数 `index.html?preview=1`。
+
+## 定时器约定（P2）
+
+页面里的循环定时器一律用 `FS.timers.every(fn, ms, label)` / `FS.timers.after(fn, ms, label)` 登记，不要裸调 `setInterval`。
+`FS.applyPage` 切页时统一 `FS.timers.clearAll()`，因此离开页面不会留下 interval。跨页面的连接类定时器用 label 白名单豁免（`app.js` 的 `TIMER_KEEP_LABELS`）：
+
+| label | 用途 | 豁免原因 |
+| --- | --- | --- |
+| `conn-health` | 本地服务心跳（8s） | 全局连接状态，与当前页面无关 |
+| `conn-loss-retry` | 断线自动重连（4s） | 断线横幅/引导页在等它恢复 |
+| `conn-countdown` | 未就绪页倒计时（1s） | 离线时切页仍要显示剩余秒数 |
+| `conn-retry` | 离线自动重试（3s 一次性） | 切页后仍须触发重连 |
+
+页面内的 label（`accounts-test-elapsed` / `accounts-batch-elapsed` / `accounts-login-*` / `reports-conn-watch` / `reports-elapsed`）不豁免，切页即清。
 
 截图验证：
 
