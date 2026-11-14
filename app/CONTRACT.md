@@ -183,12 +183,12 @@ python app/sidecar/main.py --port 0 --token <random> --data-dir <abs>
 | POST | `/api/runs` | `{keywords:[str], platforms:[str], max_notes:int, comments:bool, max_comments:int, name?:str}` | `{run_id, status:"running"}` |
 | GET | `/api/runs` | — | `{runs:[run摘要]}` |
 | GET | `/api/runs/{run_id}` | — | `{run_id,status:"running|done|failed|cancelled",created_at,finished_at,params,platforms:[{platform,label,status:"queued|running|done|failed|skipped",progress:int,stage,saved_items:int,message,started_at,finished_at}],excel_path:str|null}` |
-| GET | `/api/runs/{run_id}/logs?tail=200` | — | `{lines:[{ts,level,text}]}` |
+| GET | `/api/runs/{run_id}/logs?tail=200&after_line=7` | — | `{lines:[{ts,level,text}], next_line:int, total_lines:int}`；不传 `after_line` = 尾部 `tail` 行（现状）；传 `after_line`（0 基）= 只返回该行之后的新行，`next_line` = 总行数（不回退）。非法值（负数/非整数）→ `400 invalid_params` |
 | POST | `/api/runs/{run_id}/resume` | 可选 `{platforms?:[str]}`，**body 可整体省略**（不传/`{}`/空数组 → 默认续跑未完成平台） | `{run_id, status:"running", resumed_platforms:[str]}`；`409 RUN_BUSY`（运行中/已有任务）、`409 NO_PENDING_PLATFORMS`（全部已完成且未显式指定）、`422 INVALID_PLATFORM`（平台不在该 run）、`409 BUSY`（有 login/run/test 进行中）、`404 RUN_NOT_FOUND` |
 | POST | `/api/runs/{run_id}/stop` | — | `{ok}` |
 | POST | `/api/runs/{run_id}/export` | — | `{ok, file_path, sheets:[{name,rows}], total_rows}`（调用 exporter） |
 | GET | `/api/runs/{run_id}/data?limit=20` | — | `{sheets:[{name,columns:[str],rows:[[...]]}]}` 预览（调用 exporter.preview） |
-| GET | `/api/runs/{run_id}/feed?limit=30&comments=3` | — | `{run_id,status,keywords,counts:{content,comments,by_platform:{xhs:{content,comments}}},items:[{platform,platform_label,kind:"content",id,title,text,author,url,published_at,collected_at,metrics:{likes,comments,collects,shares,plays},comment_total,comments:[{id,author,text,likes,published_at}]}],truncated:bool}` 采集动态内容流（口径同 exporter；表/列缺失容错；DB 不存在 → 空流；`404 RUN_NOT_FOUND`） |
+| GET | `/api/runs/{run_id}/feed?limit=30&comments=3&since_seq=12` | — | `{run_id,status,keywords,counts:{content,comments,by_platform:{xhs:{content,comments}}},items:[{platform,platform_label,kind:"content",id,seq,title,text,author,url,published_at,collected_at,metrics:{likes,comments,collects,shares,plays},comment_total,comments:[{id,author,text,likes,published_at}]}],truncated:bool,next_seq:int}` 采集动态内容流（口径同 exporter；表/列缺失容错；DB 不存在 → 空流；`404 RUN_NOT_FOUND`）。`since_seq` 增量见下方说明 |
 | POST | `/api/system/open-file` | `{path:str}` | `{ok}`（仅允许 `<data-dir>/exports` 下文件） |
 | GET | `/api/system/info` | — | `{version, data_dir, logs_dir}` |
 
@@ -209,6 +209,13 @@ python app/sidecar/main.py --port 0 --token <random> --data-dir <abs>
   - 字段语义：`text` 正文摘要 ≤200 字、评论 `text` ≤120 字（清洗控制字符）；`published_at`/`collected_at` 为 `YYYY-MM-DD HH:MM`；`url` 仅 http(s)；`metrics` 5 键固定（likes/comments/collects/shares/plays，计数列 TEXT→int，平台无该指标为 `null`）；`comment_total` 为该内容在本 run 的评论总数（不受 `comments` 限制）；`counts.content/comments` 为 run 全量计数（可大于本页 `items` 数），`counts.by_platform` 只列有数据的平台；`truncated` 表示本页 `items` 是否被 `limit` 截断。
   - 容错：表/列缺失、脏数据（时间/计数无法解析）逐行容错并跳过；DB 文件不存在 → 空 `items` + `counts` 全 0（不报 500）；未知 run → 404 `RUN_NOT_FOUND`；响应无 NaN，可直接 JSON 序列化。
   - **口径差异提示**：`counts.content` 是 **MediaCrawler DB 过滤后**本 run 新增/更新的内容行数（与 `exporter._collect` 同口径）；`GET /api/runs/{run_id}` 的 `platforms[].saved_items` 是 **engine 进度事件上报的 saved 数**（平台侧命中/重复更新/评论等都算过），两者统计对象与去重口径不同，**不应直接对比**；UI 同时展示时建议分别标注（如「内容流 N 条」与「引擎已采集 M 条」）。
+  - **增量轮询（2026-11-15，M5a）**：每 item 带稳定递增 `seq`（本 run 数据集内的排序位次：按采集时间升序、同时间按平台顺序与 id 兜底）；响应带 `next_seq`（当前最大 seq）。
+    - 不传 `since_seq`：现状语义（`items` 按采集时间**倒序**，`counts` 全量）；
+    - 传 `since_seq`：只返回 `seq > since_seq` 的条目且按 seq **升序**，`next_seq` 随之前进；`counts`/`comment_total` **始终全量**；
+    - `limit` clamp 在增量模式下同样生效，超限 `truncated:true` 且 `next_seq` 只推进到已返回的最后一条（客户端可继续拉）；
+    - `since_seq` 大于当前 max（例如 DB 被外部改动/回滚）→ 空数组 + `next_seq` 原样回传，**不回退**；非法值 → `400 invalid_params`。
+    - 已知语义：`seq` 是"数据集内位次"而非入库游标——某条内容被重新采集（`last_modify_ts` 变新）会拿到更大的 `seq` 并以"新条目"回传，客户端按 `(platform,id)` 去重合并；若将来改为增量游标式入库需复核这一点。
+    - 已知边界：内存日志行号（环形缓冲）与 sidecar 重启后的文件行号是两套编号，重启且页面不刷新时可能错位——客户端遇错会用不带 `after_line` 的全量回退兜住。
 - 登录成功后可简单把 `GET /api/accounts` 的 `logged_in` 置 true（以 login 事件 confirmed 为准，并记录 `last_checked_at`）。
 - 错误统一：`{"error":{"code":"...","message":"..."}}`，HTTP 4xx/5xx。
 

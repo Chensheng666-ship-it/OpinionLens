@@ -15,6 +15,12 @@
   /* 采集动态内容流：一次最多展示 30 条内容，每条内容附带最新 3 条评论 */
   var FEED_LIMIT = 30;
   var FEED_COMMENT_PREVIEW = 3;
+  /* 增量轮询（M5a）：首屏全量；之后每次带 since_seq / after_line 只取新增部分。
+     FEED_MAX_ITEMS / LOG_LINES_MAX 是前端保留上限，防止长时间运行 DOM 无界增长。 */
+  var FEED_MAX_ITEMS = 120;
+  var LOG_LINES_MAX = 2000;
+  var PLATFORM_ORDER = {};
+  FS.PLATFORMS.forEach(function (p, index) { PLATFORM_ORDER[p.id] = index; });
 
   var state = {
     tab: 'new',
@@ -53,6 +59,14 @@
     feed: null,
     feedError: '',
     feedLoading: false,
+    /* 增量游标：feedSeq = 下次轮询的 since_seq（-1 = 还没拿到首屏，先全量）；
+       feedRenderedKeys = 当前已渲染的帖子 key（判断是否只需在顶部追加） */
+    feedSeq: -1,
+    feedRenderedKeys: [],
+    /* 增量游标：logCursor = 下次轮询的 after_line（-1 = 首屏，尾部 N 行）；
+       logRenderedKeys = 已渲染的日志行 key（判断是否只需在底部追加） */
+    logCursor: -1,
+    logRenderedKeys: [],
     /* 运行明细区：采集动态 / 分平台进度 / 技术日志 三个 tab（技术日志不再被内容流挤到底部） */
     detailTab: 'feed',
     logFilter: 'all',
@@ -74,8 +88,9 @@
   var viewEl = null;
 
   function addTimer(id) { state.timers.push(id); return id; }
+  /* 页内定时器统一走 FS.timers（切页 clearAll + destroy 双保险），这里只做兜底清理。 */
   function clearTimers() {
-    state.timers.forEach(function (id) { clearInterval(id); clearTimeout(id); });
+    state.timers.forEach(function (id) { FS.timers.clear(id); });
     state.timers = [];
     stopPoll();
   }
@@ -527,7 +542,14 @@
   }
 
   /* ------------------------------------------------------------ 运行详情 */
-  function renderDetail() {
+  /**
+   * 渲染运行详情。
+   *
+   * ``opts.live``：轮询用「原地补丁」——若当前 DOM 仍是同一个 run 的骨架，就只更新
+   * 变化的部分（头部状态、概览、平台行、采集动态/日志的计数与新增条目），不再整块重建，
+   * 从而不打断用户的滚动位置。补丁失败（结构不匹配）时自动回退整块渲染。
+   */
+  function renderDetail(opts) {
     var box = viewEl && viewEl.querySelector('#run-detail');
     if (!box) return;
     if (!state.selectedRunId) {
@@ -552,63 +574,215 @@
       box.innerHTML = '<div class="card"><div class="empty"><b>任务详情加载中…</b></div></div>';
       return;
     }
-    var run = state.run;
+    if (opts && opts.live && patchRunShell(state.run)) return;
+    var prevActivityScroll = captureActivityScroll();
+    box.innerHTML = runShellHtml(state.run);
+    renderSideSummary();
+    restoreActivityScroll(prevActivityScroll);
+  }
+
+  /** 运行详情骨架（首屏/结构变化时整块渲染；轮询时走 patchRunShell 原地更新）。 */
+  function runShellHtml(run) {
+    var exportedPath = (state.exportResults[run.run_id] && state.exportResults[run.run_id].file_path) || run.excel_path;
+    var canExport = isTerminal(run.status) && savedTotal(run) > 0;
+    return '<div class="run-shell" data-detail-run="' + FS.escape(run.run_id) + '">' +
+      /* 头部 */
+      '<div class="run-head" data-slot="run-head">' + runHeadHtml(run) + '</div>' +
+      /* 状态横幅（display:contents 的容器：整块替换时不影响原有 flex 布局） */
+      '<div data-slot="run-banners" style="display:contents">' + runBannersHtml(run) + '</div>' +
+      /* 概要 */
+      '<div class="run-meta-grid" data-slot="run-meta">' + runMetaHtml(run) + '</div>' +
+      '<div class="run-keywords" data-slot="run-keywords">' + runKeywordsHtml(run) + '</div>' +
+      /* 导出（重要结果放在上方） */
+      '<div data-slot="run-export" style="display:contents">' + exportPanelHtml(run, exportedPath, canExport) + '</div>' +
+      /* 运行明细：采集动态 / 分平台进度 / 技术日志（tab 切换，内容区固定高度内滚动） */
+      runActivityCardHtml(run) +
+    '</div>';
+  }
+
+  function runHeadHtml(run) {
     var st = FS.runStatus(run.status, run.platforms);
     var stChip = st.label + (st.partial ? ' ' + st.done + '/' + st.total : '');
-    var collected = collectedSummary(run);
-    var canExport = isTerminal(run.status) && savedTotal(run) > 0;
-    var exportedPath = (state.exportResults[run.run_id] && state.exportResults[run.run_id].file_path) || run.excel_path;
     var pending = pendingPlatforms(run);
     var resumable = canResumeRun(run);
     var resumeBusy = state.resuming;
-    var prevActivityScroll = captureActivityScroll();
-
-    box.innerHTML = '<div class="run-shell">' +
-      /* 头部 */
-      '<div class="run-head">' +
-        '<div class="run-head-main">' +
-          '<div class="run-title">' + FS.escape(runName(run)) + FS.chip(stChip, st.tone, st.icon) + '</div>' +
-          '<div class="run-sub">任务 ' + FS.escape(run.run_id) + ' · 创建于 ' + FS.fmtDateTime(run.created_at) + '</div>' +
-        '</div>' +
-        '<div class="run-actions">' +
-          (resumable ? '<button class="btn btn-sm btn-primary" data-act="resume-run"' + (resumeBusy ? ' disabled' : '') + '>' +
-            (resumeBusy ? '<span class="spinner"></span>续采中…' : FS.icon('play') + '继续采集未完成平台（' + pending.length + '）') + '</button>' : '') +
-          (run.status === 'running' ? '<button class="btn btn-sm btn-danger-ghost" data-act="stop-run"' + (state.stopping ? ' disabled' : '') + '>' + (state.stopping ? '<span class="spinner"></span>停止中…' : FS.icon('stop') + '停止任务') + '</button>' : '') +
-          (canExport ? '<button class="btn btn-sm btn-accent" data-act="export-run"' + (state.exporting ? ' disabled' : '') + '>' + (state.exporting ? '<span class="spinner"></span>导出中…' : FS.icon('download') + (exportedPath ? '重新导出' : '导出 Excel')) + '</button>' : '') +
-          '<button class="icon-btn" data-act="reload-run" title="刷新任务详情">' + FS.icon('refresh') + '</button>' +
-        '</div>' +
+    var exportedPath = (state.exportResults[run.run_id] && state.exportResults[run.run_id].file_path) || run.excel_path;
+    var canExport = isTerminal(run.status) && savedTotal(run) > 0;
+    return '<div class="run-head-main">' +
+        '<div class="run-title">' + FS.escape(runName(run)) + FS.chip(stChip, st.tone, st.icon) + '</div>' +
+        '<div class="run-sub">任务 ' + FS.escape(run.run_id) + ' · 创建于 ' + FS.fmtDateTime(run.created_at) + '</div>' +
       '</div>' +
-      /* 状态横幅 */
-      (resumable ? '<div class="banner banner-warn run-pending-banner"><span class="banner-icon">' + FS.icon('warn') + '</span><div class="banner-body"><b>' +
+      '<div class="run-actions">' +
+        (resumable ? '<button class="btn btn-sm btn-primary" data-act="resume-run"' + (resumeBusy ? ' disabled' : '') + '>' +
+          (resumeBusy ? '<span class="spinner"></span>续采中…' : FS.icon('play') + '继续采集未完成平台（' + pending.length + '）') + '</button>' : '') +
+        (run.status === 'running' ? '<button class="btn btn-sm btn-danger-ghost" data-act="stop-run"' + (state.stopping ? ' disabled' : '') + '>' + (state.stopping ? '<span class="spinner"></span>停止中…' : FS.icon('stop') + '停止任务') + '</button>' : '') +
+        (canExport ? '<button class="btn btn-sm btn-accent" data-act="export-run"' + (state.exporting ? ' disabled' : '') + '>' + (state.exporting ? '<span class="spinner"></span>导出中…' : FS.icon('download') + (exportedPath ? '重新导出' : '导出 Excel')) + '</button>' : '') +
+        '<button class="icon-btn" data-act="reload-run" title="刷新任务详情">' + FS.icon('refresh') + '</button>' +
+      '</div>';
+  }
+
+  function runBannersHtml(run) {
+    var pending = pendingPlatforms(run);
+    var resumable = canResumeRun(run);
+    return (resumable ? '<div class="banner banner-warn run-pending-banner"><span class="banner-icon">' + FS.icon('warn') + '</span><div class="banner-body"><b>' +
         pending.length + ' 个平台未完成</b> · ' + FS.escape(pendingNames(run).join('、')) +
         '。可断点续采，沿用同一任务与已采集数据，无需重新创建任务。</div></div>' : '') +
       (run.status === 'failed' ? '<div class="banner banner-neg"><span class="banner-icon">' + FS.icon('alert') + '</span><div class="banner-body"><b>任务失败</b> · ' + FS.escape((run.platforms.filter(function (p) { return p.status === 'failed'; })[0] || {}).message || '部分平台采集失败，请查看分平台状态与日志。') + '</div></div>' : '') +
       (run.status === 'cancelled' ? '<div class="banner banner-warn"><span class="banner-icon">' + FS.icon('stop') + '</span><div class="banner-body"><b>任务已停止</b> · 已采集的数据会保留，可导出已采集部分或继续采集未完成平台。</div></div>' : '') +
-      (state.runError ? '<div class="banner banner-warn"><span class="banner-icon">' + FS.icon('warn') + '</span><div class="banner-body">状态刷新失败：' + FS.escape(state.runError) + '（' + (state.pollErrors > 0 ? '已重试 ' + state.pollErrors + ' 次' : '') + '）</div></div>' : '') +
-      /* 概要 */
-      '<div class="run-meta-grid">' +
-        '<div class="run-meta-cell"><span>' + FS.escape(collected.label) + '</span><b>' + FS.escape(collected.main) + '</b><small>' + FS.escape(collected.sub) + '</small></div>' +
-        '<div class="run-meta-cell"><span>平台完成</span><b>' + runDonePlatforms(run) + ' / ' + runPlatforms(run).length + '</b><small>' + (st.partial ? st.failed + ' 个平台未完成' : '') + '</small></div>' +
-        '<div class="run-meta-cell"><span>耗时</span><b>' + (run.status === 'running' ? FS.fmtDuration(Date.now() - (FS.parseTime(run.created_at) || Date.now())) : FS.fmtDurationBetween(run.created_at, run.finished_at)) + '</b></div>' +
-        '<div class="run-meta-cell"><span>任务状态</span><b>' + FS.escape(st.label) + '</b><small>创建于 ' + FS.fmtDateTime(run.created_at) + '</small></div>' +
-      '</div>' +
-      '<div class="run-keywords">' +
-        '<span class="label">关键词</span>' +
-        (run.params && run.params.keywords ? run.params.keywords.map(function (k) { return '<span class="kw-chip">' + FS.escape(k) + '</span>'; }).join('') : '<span class="kw-chip">—</span>') +
-        '<span class="label" style="margin-left:6px">每关键词上限</span><b>' + FS.escape(String((run.params && run.params.max_notes) || '—')) + ' 条</b>' +
-        ((run.params && run.params.comments) ? '<span class="tag tag-muted">抓评论 · 每条 ≤ ' + FS.escape(String(run.params.max_comments || '—')) + '</span>' : '<span class="tag tag-muted">不抓评论</span>') +
-        (run.account_policy ? '<span class="label" style="margin-left:6px">账号策略</span>' +
-          '<span class="tag tag-accent" title="' + FS.escape(accountPolicySummary(run.account_policy)) + '">' + FS.icon('users') +
-          FS.escape(accountPolicySummary(run.account_policy)) + '</span>' : '') +
-      '</div>' +
-      /* 导出（重要结果放在上方） */
-      exportPanelHtml(run, exportedPath, canExport) +
-      /* 运行明细：采集动态 / 分平台进度 / 技术日志（tab 切换，内容区固定高度内滚动） */
-      runActivityCardHtml(run) +
-    '</div>';
+      (state.runError ? '<div class="banner banner-warn"><span class="banner-icon">' + FS.icon('warn') + '</span><div class="banner-body">状态刷新失败：' + FS.escape(state.runError) + '（' + (state.pollErrors > 0 ? '已重试 ' + state.pollErrors + ' 次' : '') + '）</div></div>' : '');
+  }
 
+  function runMetaHtml(run) {
+    var st = FS.runStatus(run.status, run.platforms);
+    var collected = collectedSummary(run);
+    return '<div class="run-meta-cell"><span>' + FS.escape(collected.label) + '</span><b>' + FS.escape(collected.main) + '</b><small>' + FS.escape(collected.sub) + '</small></div>' +
+      '<div class="run-meta-cell"><span>平台完成</span><b>' + runDonePlatforms(run) + ' / ' + runPlatforms(run).length + '</b><small>' + (st.partial ? st.failed + ' 个平台未完成' : '') + '</small></div>' +
+      '<div class="run-meta-cell"><span>耗时</span><b>' + (run.status === 'running' ? FS.fmtDuration(Date.now() - (FS.parseTime(run.created_at) || Date.now())) : FS.fmtDurationBetween(run.created_at, run.finished_at)) + '</b></div>' +
+      '<div class="run-meta-cell"><span>任务状态</span><b>' + FS.escape(st.label) + '</b><small>创建于 ' + FS.fmtDateTime(run.created_at) + '</small></div>';
+  }
+
+  function runKeywordsHtml(run) {
+    return '<span class="label">关键词</span>' +
+      (run.params && run.params.keywords ? run.params.keywords.map(function (k) { return '<span class="kw-chip">' + FS.escape(k) + '</span>'; }).join('') : '<span class="kw-chip">—</span>') +
+      '<span class="label" style="margin-left:6px">每关键词上限</span><b>' + FS.escape(String((run.params && run.params.max_notes) || '—')) + ' 条</b>' +
+      ((run.params && run.params.comments) ? '<span class="tag tag-muted">抓评论 · 每条 ≤ ' + FS.escape(String(run.params.max_comments || '—')) + '</span>' : '<span class="tag tag-muted">不抓评论</span>') +
+      (run.account_policy ? '<span class="label" style="margin-left:6px">账号策略</span>' +
+        '<span class="tag tag-accent" title="' + FS.escape(accountPolicySummary(run.account_policy)) + '">' + FS.icon('users') +
+        FS.escape(accountPolicySummary(run.account_policy)) + '</span>' : '');
+  }
+
+  /**
+   * 轮询时的原地补丁：只替换 run 骨架里各 slot 的内容，明细区走增量（见 patchActivity）。
+   * @returns {boolean} false = DOM 结构不匹配，调用方回退整块渲染
+   */
+  function patchRunShell(run) {
+    var box = viewEl && viewEl.querySelector('#run-detail');
+    var shell = box && box.querySelector('.run-shell');
+    if (!shell || shell.getAttribute('data-detail-run') !== run.run_id) return false;
+    if (!setSlotHtml(shell, 'run-head', runHeadHtml(run))) return false;
+    if (!setSlotHtml(shell, 'run-banners', runBannersHtml(run))) return false;
+    if (!setSlotHtml(shell, 'run-meta', runMetaHtml(run))) return false;
+    if (!setSlotHtml(shell, 'run-export', exportPanelHtml(
+      run,
+      (state.exportResults[run.run_id] && state.exportResults[run.run_id].file_path) || run.excel_path,
+      isTerminal(run.status) && savedTotal(run) > 0
+    ))) return false;
     renderSideSummary();
-    restoreActivityScroll(prevActivityScroll);
+    return patchActivity(run);
+  }
+
+  function setSlotHtml(shell, slot, html) {
+    var node = shell.querySelector('[data-slot="' + slot + '"]');
+    if (!node) return false;
+    if (node.innerHTML !== html) node.innerHTML = html;
+    return true;
+  }
+
+  function activityScrollBox() {
+    return viewEl && viewEl.querySelector('#run-activity-body');
+  }
+
+  function isNearBottom(el) {
+    if (!el) return true;
+    return (el.scrollHeight - el.scrollTop - el.clientHeight) < 48;
+  }
+
+  /** 明细区补丁：tab 头/工具条按需刷新；feed/logs 列表只在末尾（或顶部）追加。 */
+  function patchActivity(run) {
+    var card = viewEl && viewEl.querySelector('#run-detail .run-activity-card');
+    if (!card) return false;
+    var body = card.querySelector('#run-activity-body');
+    if (!body) return false;
+    var tab = body.getAttribute('data-tab') || 'feed';
+    var wantTab = state.detailTab || 'feed';
+    if (tab !== wantTab) return false; // tab 切换走整块渲染（保持原交互）
+    setSlotHtml(card, 'run-tabs', activityTabsHtml(run));
+    setSlotHtml(card, 'run-tools', activityToolsHtml(run));
+    if (tab === 'feed') return patchFeedPane(run);
+    if (tab === 'logs') return patchLogsPane(run);
+    /* 分平台进度：行数少，直接重建 pane 内容 */
+    body.innerHTML = platformsPaneHtml(run);
+    return true;
+  }
+
+  /** desired 是否等于 “前面多出若干条 + 原有 keys 原样不动”（feed 顶部追加 / 日志底部追加）。 */
+  function isPrefixDelta(desiredKeys, prevKeys) {
+    if (!Array.isArray(prevKeys) || !prevKeys.length) return true;
+    if (desiredKeys.length < prevKeys.length) return false;
+    var extra = desiredKeys.length - prevKeys.length;
+    for (var i = 0; i < prevKeys.length; i += 1) {
+      if (desiredKeys[extra + i] !== prevKeys[i]) return false;
+    }
+    return true;
+  }
+
+  /**
+   * 采集动态增量渲染：新帖插到列表顶部（最新在前）。
+   * 用户贴顶时保持贴顶（看最新）；用户翻到历史位置时按新增高度补偿 scrollTop，视图不被拽走。
+   */
+  function patchFeedPane(run) {
+    var body = activityScrollBox();
+    var pane = body && body.querySelector('.feed-pane');
+    if (!pane) return false;
+    var items = feedItems();
+    setSlotHtml(pane, 'feed-head', feedPaneHeadHtml());
+    var list = pane.querySelector('[data-slot="feed-list"]');
+    if (!items.length || !list) return false; // 空态/首次：交给整块渲染
+    var desiredKeys = items.map(feedItemKey);
+    var prevKeys = state.feedRenderedKeys || [];
+    var addedCount = Math.max(0, desiredKeys.length - prevKeys.length);
+    if (isPrefixDelta(desiredKeys, prevKeys)) {
+      if (addedCount > 0) {
+        /* 增量条目按 seq 升序到达，DOM 里“最新在最上”→ 反向插入 */
+        var addedHtml = items.slice(0, addedCount).reverse().map(feedItemHtml).join('');
+        var wasAtTop = body.scrollTop <= 2;
+        var prevTop = body.scrollTop;
+        var prevHeight = list.scrollHeight;
+        list.insertAdjacentHTML('afterbegin', addedHtml);
+        var grew = list.scrollHeight - prevHeight;
+        body.scrollTop = wasAtTop ? 0 : prevTop + grew;
+      }
+    } else {
+      /* 顺序/内容变了（如某帖子评论增加被重新采集）：只重建列表本身并保留滚动位置 */
+      var keepTop = body.scrollTop;
+      var stickTop = body.scrollTop <= 2;
+      list.innerHTML = items.map(feedItemHtml).join('');
+      body.scrollTop = stickTop ? 0 : keepTop;
+    }
+    state.feedRenderedKeys = desiredKeys;
+    setSlotHtml(pane, 'feed-warn', feedWarnHtml());
+    setSlotHtml(pane, 'feed-more', feedMoreHtml());
+    return true;
+  }
+
+  /** 技术日志增量渲染：新行追加到列表底部；自动滚动开启且原本贴底时继续跟随最新。 */
+  function patchLogsPane(run) {
+    var body = activityScrollBox();
+    var pane = body && body.querySelector('.logs-pane');
+    if (!pane) return false;
+    var list = pane.querySelector('[data-slot="log-list"]');
+    if (!list) return false;
+    var models = logRowModels();
+    if (!models.length) return false; // 空态/筛选无匹配：交给整块渲染
+    setSlotHtml(pane, 'log-filters', techLogFiltersHtml());
+    setSlotHtml(pane, 'log-tools', techLogToolsHtml());
+    setSlotHtml(pane, 'log-meta', techLogMetaHtml());
+    var keys = models.map(function (model) { return model.key; });
+    var prevKeys = state.logRenderedKeys || [];
+    var followed = state.autoScroll && isNearBottom(body);
+    var prevTop = body.scrollTop;
+    if (isPrefixDelta(keys, prevKeys)) {
+      var addedCount = Math.max(0, keys.length - prevKeys.length);
+      if (addedCount > 0) {
+        var start = models.length - addedCount;
+        list.insertAdjacentHTML('beforeend', models.slice(start).map(function (model) { return model.html; }).join(''));
+      }
+    } else {
+      list.innerHTML = models.map(function (model) { return model.html; }).join('');
+    }
+    state.logRenderedKeys = keys;
+    body.scrollTop = followed ? body.scrollHeight : prevTop;
+    return true;
   }
 
   /* 运行明细 tab 前的滚动位置（轮询重渲染时保持用户位置） */
@@ -1069,19 +1243,34 @@
       countHtml +
     '</div>';
   }
-  function rawLogRowsHtml() {
-    if (state.logsError && !state.logs.length) return '';
-    var rows = [];
+  /** 原始日志行（增量渲染用模型：key 用于判断“是否只是尾部新增”）。 */
+  function rawLogRowModels() {
+    if (state.logsError && !state.logs.length) return [];
+    var models = [];
     state.logs.forEach(function (line) {
       var text = String((line && (line.text || line.message)) || '').replace(/\r/g, '');
       if (!text.trim()) return;
       var level = logLevel(String((line && line.level) || ''));
       var shown = text.length > 600 ? text.slice(0, 600) + ' …（长行已截断）' : text;
-      rows.push('<div class="tech-log-row tech-log-raw is-' + (level === 'warn' || level === 'error' ? level : 'info') + '">' +
-        '<span class="tech-log-time">' + logTimeText(line.ts) + '</span>' +
-        '<span class="tech-log-text">' + FS.escape(shown) + '</span></div>');
+      models.push({
+        key: 'raw\u0001' + String(line.ts) + '\u0001' + String(line.level || '') + '\u0001' + text,
+        html: '<div class="tech-log-row tech-log-raw is-' + (level === 'warn' || level === 'error' ? level : 'info') + '">' +
+          '<span class="tech-log-time">' + logTimeText(line.ts) + '</span>' +
+          '<span class="tech-log-text">' + FS.escape(shown) + '</span></div>'
+      });
     });
-    return rows.join('');
+    return models;
+  }
+  /** 当前应渲染的日志行模型（原始 / 解析后 + 筛选）。 */
+  function logRowModels() {
+    if (state.logRaw) return rawLogRowModels();
+    return filteredLogEntries().map(function (entry) {
+      return {
+        key: 'parsed\u0001' + String(entry.level) + '\u0001' + String(entry.kind) + '\u0001' +
+          String(entry.platform || '') + '\u0001' + String(entry.ts) + '\u0001' + String(entry.count) + '\u0001' + entry.text,
+        html: logEntryRowHtml(entry)
+      };
+    });
   }
   function logSummaryText() {
     var run = state.run;
@@ -1097,6 +1286,27 @@
     var def = logFilterDefs().filter(function (d) { return d.id === filter; })[0];
     return (def && def.label) || '全部';
   }
+  function techLogFiltersHtml() {
+    var entries = getLogEntries();
+    return logFilterDefs().map(function (d) {
+      var on = (state.logFilter || 'all') === d.id;
+      var n = logFilterCount(entries, d.id);
+      return '<button type="button" class="tech-log-filter' + (on ? ' is-on' : '') + '" data-log-filter="' + d.id + '" aria-pressed="' + (on ? 'true' : 'false') + '">' +
+        FS.escape(d.label) + '<b>' + n + '</b></button>';
+    }).join('');
+  }
+  function techLogToolsHtml() {
+    var canLoadMore = state.logs.length >= state.logTail && state.logTail < 2000;
+    return '<button type="button" class="console-btn" data-act="toggle-autoscroll">自动滚动：' + (state.autoScroll ? '开' : '关') + '</button>' +
+      '<button type="button" class="console-btn' + (state.logRaw ? ' is-on' : '') + '" data-act="toggle-log-raw" aria-pressed="' + (state.logRaw ? 'true' : 'false') + '">原始日志</button>' +
+      '<button type="button" class="console-btn" data-act="copy-logs">复制</button>' +
+      (canLoadMore ? '<button type="button" class="console-btn" data-act="load-more-logs">加载更多</button>' : '');
+  }
+  function techLogMetaHtml() {
+    var entries = getLogEntries();
+    return '原始 ' + state.logs.length + ' 行 → 解析 ' + entries.length + ' 条' +
+      (state.logRaw ? ' · 正在显示原始日志' : ' · 长 JSON / 堆栈已折叠');
+  }
   function logsPaneHtml(run) {
     if (state.logsError && !state.logs.length) {
       return '<div class="run-activity-pane"><div class="feed-empty feed-empty-warn"><div class="feed-empty-ic">' + FS.icon('alert') + '</div>' +
@@ -1104,39 +1314,28 @@
         '<button class="btn btn-sm btn-ghost" data-act="reload-run" style="margin-top:4px">' + FS.icon('refresh') + '重新加载</button></div></div>';
     }
     var entries = getLogEntries();
-    var filters = logFilterDefs().map(function (d) {
-      var on = (state.logFilter || 'all') === d.id;
-      var n = logFilterCount(entries, d.id);
-      return '<button type="button" class="tech-log-filter' + (on ? ' is-on' : '') + '" data-log-filter="' + d.id + '" aria-pressed="' + (on ? 'true' : 'false') + '">' +
-        FS.escape(d.label) + '<b>' + n + '</b></button>';
-    }).join('');
-    var shown = filteredLogEntries();
+    var models = logRowModels();
     var body = '';
     if (state.logRaw) {
-      body = rawLogRowsHtml() || '<div class="feed-empty"><b>暂无原始日志</b></div>';
+      body = models.map(function (model) { return model.html; }).join('') || '<div class="feed-empty"><b>暂无原始日志</b></div>';
     } else if (!entries.length) {
       body = '<div class="feed-empty"><div class="feed-empty-ic">' + FS.icon('terminal') + '</div><b>' +
         (run && run.status === 'running' ? '正在采集，等待日志…' : '暂无技术日志') + '</b>' +
         '<p>日志会解析成「搜索关键词 / 保存内容 / 保存评论 / 异常」等可读条目。</p></div>';
-    } else if (!shown.length) {
+    } else if (!models.length) {
       body = '<div class="feed-empty"><b>当前筛选没有匹配日志</b><p>切换到「全部」查看全部条目。</p></div>';
     } else {
-      body = shown.map(logEntryRowHtml).join('');
+      body = models.map(function (model) { return model.html; }).join('');
     }
-    var canLoadMore = state.logs.length >= state.logTail && state.logTail < 2000;
+    /* 与刚渲染的 DOM 对齐：轮询时据此判断是否只需在底部追加 */
+    state.logRenderedKeys = models.map(function (model) { return model.key; });
     return '<div class="run-activity-pane logs-pane">' +
       '<div class="tech-log-toolbar">' +
-        '<div class="tech-log-filters" role="group" aria-label="日志筛选">' + filters + '</div>' +
-        '<div class="tech-log-tools">' +
-          '<button type="button" class="console-btn" data-act="toggle-autoscroll">自动滚动：' + (state.autoScroll ? '开' : '关') + '</button>' +
-          '<button type="button" class="console-btn' + (state.logRaw ? ' is-on' : '') + '" data-act="toggle-log-raw" aria-pressed="' + (state.logRaw ? 'true' : 'false') + '">原始日志</button>' +
-          '<button type="button" class="console-btn" data-act="copy-logs">复制</button>' +
-          (canLoadMore ? '<button type="button" class="console-btn" data-act="load-more-logs">加载更多</button>' : '') +
-        '</div>' +
+        '<div class="tech-log-filters" role="group" aria-label="日志筛选" data-slot="log-filters">' + techLogFiltersHtml() + '</div>' +
+        '<div class="tech-log-tools" data-slot="log-tools">' + techLogToolsHtml() + '</div>' +
       '</div>' +
-      '<div class="tech-log-meta">原始 ' + state.logs.length + ' 行 → 解析 ' + entries.length + ' 条' +
-        (state.logRaw ? ' · 正在显示原始日志' : ' · 长 JSON / 堆栈已折叠') + '</div>' +
-      '<div class="tech-log-list">' + body + '</div>' +
+      '<div class="tech-log-meta" data-slot="log-meta">' + techLogMetaHtml() + '</div>' +
+      '<div class="tech-log-list" data-slot="log-list">' + body + '</div>' +
     '</div>';
   }
 
@@ -1148,10 +1347,9 @@
       { id: 'logs', label: '技术日志', icon: 'terminal' }
     ];
   }
-  function runActivityCardHtml(run) {
+  function activityTabsHtml(run) {
     var tab = state.detailTab || 'feed';
-    var showLive = run && run.status === 'running';
-    var tabs = activityTabDefs().map(function (def) {
+    return activityTabDefs().map(function (def) {
       var on = tab === def.id;
       var badge = '';
       if (def.id === 'logs' && !state.logRaw) {
@@ -1162,29 +1360,41 @@
         '" aria-selected="' + (on ? 'true' : 'false') + '" aria-controls="run-activity-body" data-detail-tab="' + def.id + '" tabindex="' + (on ? '0' : '-1') + '">' +
         FS.icon(def.icon) + FS.escape(def.label) + badge + '</button>';
     }).join('');
-    var tools = '';
+  }
+
+  function activityToolsHtml(run) {
+    var tab = state.detailTab || 'feed';
+    var showLive = run && run.status === 'running';
     if (tab === 'feed') {
-      tools = '<button type="button" class="feed-btn" data-act="copy-feed" title="复制当前采集动态摘要（帖子、作者与最新评论）">' + FS.icon('download') + '复制摘要</button>';
-    } else if (tab === 'logs') {
-      tools = '<span class="run-activity-hint">' + (showLive ? 'LIVE · ' : '') + '解析后的可读日志；原始日志可切换查看</span>';
-    } else {
-      tools = '<span class="run-activity-hint">' + (showLive ? '每 1.5 秒自动刷新' : '任务已结束') + '</span>';
+      return '<button type="button" class="feed-btn" data-act="copy-feed" title="复制当前采集动态摘要（帖子、作者与最新评论）">' + FS.icon('download') + '复制摘要</button>';
     }
+    if (tab === 'logs') {
+      return '<span class="run-activity-hint">' + (showLive ? 'LIVE · ' : '') + '解析后的可读日志；原始日志可切换查看</span>';
+    }
+    return '<span class="run-activity-hint">' + (showLive ? '每 1.5 秒自动刷新' : '任务已结束') + '</span>';
+  }
+
+  function platformsPaneHtml(run) {
+    return '<div class="run-activity-pane platforms-pane"><div class="run-platforms">' + runPlatforms(run).map(platformRowHtml).join('') + '</div></div>';
+  }
+
+  function runActivityCardHtml(run) {
+    var tab = state.detailTab || 'feed';
     var body;
-    if (tab === 'platforms') body = '<div class="run-activity-pane platforms-pane"><div class="run-platforms">' + runPlatforms(run).map(platformRowHtml).join('') + '</div></div>';
+    if (tab === 'platforms') body = platformsPaneHtml(run);
     else if (tab === 'logs') body = logsPaneHtml(run);
     else body = feedPaneHtml(run);
     return '<section class="card run-activity-card">' +
       '<div class="run-activity-head">' +
-        '<div class="section-tabs run-detail-tabs" role="tablist" aria-label="运行明细">' + tabs + '</div>' +
-        '<div class="run-activity-tools">' + tools + '</div>' +
+        '<div class="section-tabs run-detail-tabs" role="tablist" aria-label="运行明细" data-slot="run-tabs">' + activityTabsHtml(run) + '</div>' +
+        '<div class="run-activity-tools" data-slot="run-tools">' + activityToolsHtml(run) + '</div>' +
       '</div>' +
       '<div class="run-activity-body" id="run-activity-body" role="tabpanel" data-tab="' + tab + '" aria-labelledby="run-tab-' + tab + '">' + body + '</div>' +
     '</section>';
   }
 
-  /** 采集动态面板：沿用原 feed 卡片内容，改为 tab 内固定高度滚动。 */
-  function feedPaneHtml(run) {
+  /** 采集动态面板头（计数 + 平台芯片）：增量时单独替换这一块。 */
+  function feedPaneHeadHtml() {
     var items = feedItems();
     var counts = feedCounts();
     var byPlatform = counts.byPlatform || {};
@@ -1210,23 +1420,40 @@
         '<span>评论 <b>' + FS.escape(fmtCount(counts.comments)) + '</b> 条</span>' +
         (state.feed.truncated ? '<span class="feed-hint">仅展示最新 ' + items.length + ' 条</span>' : '');
     }
+    return '<div class="feed-counts">' + countsLine + '</div>' +
+      (platformChips ? '<div class="feed-platforms">' + platformChips + '</div>' : '');
+  }
+
+  /** 采集动态列表尾注（truncated 提示）：与列表分开，便于增量时只更新它。 */
+  function feedMoreHtml() {
+    var items = feedItems();
+    return (state.feed && state.feed.truncated && items.length)
+      ? '<div class="feed-more">仅展示最新 ' + items.length + ' 条内容；全部数据可在任务结束后导出 Excel 查看。</div>'
+      : '';
+  }
+
+  /** 采集动态面板：沿用原 feed 卡片内容，改为 tab 内固定高度滚动。 */
+  function feedPaneHtml(run) {
+    var items = feedItems();
+    /* 与刚渲染的 DOM 对齐：轮询时据此判断是否只需在顶部追加 */
+    state.feedRenderedKeys = items.map(feedItemKey);
     return '<div class="run-activity-pane feed-pane">' +
-      '<div class="feed-pane-head">' +
-        '<div class="feed-counts">' + countsLine + '</div>' +
-        (platformChips ? '<div class="feed-platforms">' + platformChips + '</div>' : '') +
-      '</div>' +
+      '<div class="feed-pane-head" data-slot="feed-head">' + feedPaneHeadHtml() + '</div>' +
       '<div class="feed-body">' +
-        ((state.feedError && items.length)
-          ? '<div class="feed-warn">' + FS.icon('warn') + '<span>动态刷新失败，当前展示上次抓取的内容：' + FS.escape(state.feedError) + '</span></div>'
-          : '') +
+        '<div data-slot="feed-warn" style="display:contents">' + feedWarnHtml() + '</div>' +
         (items.length
-          ? '<div class="feed-list">' + items.map(feedItemHtml).join('') + '</div>' +
-            (state.feed && state.feed.truncated
-              ? '<div class="feed-more">仅展示最新 ' + items.length + ' 条内容；全部数据可在任务结束后导出 Excel 查看。</div>'
-              : '')
-          : feedEmptyHtml(run)) +
+          ? '<div class="feed-list" data-slot="feed-list">' + items.map(feedItemHtml).join('') + '</div>' +
+            '<div data-slot="feed-more" style="display:contents">' + feedMoreHtml() + '</div>'
+          : '<div data-slot="feed-empty" style="display:contents">' + feedEmptyHtml(run) + '</div>') +
       '</div>' +
     '</div>';
+  }
+
+  function feedWarnHtml() {
+    var items = feedItems();
+    return (state.feedError && items.length)
+      ? '<div class="feed-warn">' + FS.icon('warn') + '<span>动态刷新失败，当前展示上次抓取的内容：' + FS.escape(state.feedError) + '</span></div>'
+      : '';
   }
 
   /* ------------------------------------------------------------ 采集动态（真实帖子/评论内容流）
@@ -1255,8 +1482,99 @@
         by_platform: byPlatform
       },
       items: Array.isArray(data.items) ? data.items : [],
-      truncated: !!data.truncated
+      truncated: !!data.truncated,
+      next_seq: numberOr(data.next_seq, -1)
     };
+  }
+
+  /* ------------------------------------------------------------ 增量合并（M5a） */
+  function feedItemKey(item) {
+    return String((item && item.platform) || '') + '\u0000' + String((item && item.id) || '');
+  }
+
+  function platformOrder(code) {
+    var index = PLATFORM_ORDER[String(code || '')];
+    return isFinite(index) ? index : 99;
+  }
+
+  /** 与后端首屏口径一致：采集时间倒序 → 平台顺序 → ID（升序）。 */
+  function feedOrderCompare(a, b) {
+    var ta = String((a && a.collected_at) || '');
+    var tb = String((b && b.collected_at) || '');
+    if (ta !== tb) return ta < tb ? 1 : -1;
+    var pa = platformOrder(a && a.platform);
+    var pb = platformOrder(b && b.platform);
+    if (pa !== pb) return pa - pb;
+    var ia = String((a && a.id) || '');
+    var ib = String((b && b.id) || '');
+    return ia < ib ? -1 : ia > ib ? 1 : 0;
+  }
+
+  /** 合并帖子：按 (platform,id) 去重（新数据覆盖旧卡片），保持“最新在前”，并限制总数。 */
+  function mergeFeedItems(base, incoming) {
+    var map = {};
+    var order = [];
+    function push(item) {
+      if (!item || typeof item !== 'object') return;
+      var key = feedItemKey(item);
+      if (!map[key]) {
+        map[key] = item;
+        order.push(key);
+      } else {
+        map[key] = item;
+      }
+    }
+    (base || []).forEach(push);
+    (incoming || []).forEach(push);
+    var items = order.map(function (key) { return map[key]; });
+    items.sort(feedOrderCompare);
+    if (items.length > FEED_MAX_ITEMS) items = items.slice(0, FEED_MAX_ITEMS);
+    return items;
+  }
+
+  /**
+   * 合并一次 feed 响应。
+   * - ``incremental=false``（首屏/整块刷新）：直接替换（后端已是倒序全量语义）；
+   * - ``incremental=true``：counts/comment_total 仍是全量，items 只含新条目 → 追加合并；
+   *   同时推进 ``state.feedSeq`` 游标（无 next_seq 的老服务端保持 -1，回退全量轮询）。
+   */
+  function mergeFeedResponse(data, incremental) {
+    var incoming = normalizeFeed(data);
+    if (!incoming) return false;
+    if (!incremental || !state.feed) {
+      state.feed = incoming;
+    } else {
+      var merged = mergeFeedItems(feedItems(), incoming.items);
+      state.feed = {
+        run_id: incoming.run_id || state.feed.run_id,
+        status: incoming.status || state.feed.status,
+        keywords: (incoming.keywords && incoming.keywords.length) ? incoming.keywords : state.feed.keywords,
+        counts: (incoming.counts && incoming.counts.content >= 0) ? incoming.counts : state.feed.counts,
+        items: merged,
+        /* 首屏“仅展示最新 N 条”提示保留；前端保留上限生效时同样提示 */
+        truncated: !!state.feed.truncated || merged.length >= FEED_MAX_ITEMS,
+        next_seq: incoming.next_seq >= 0 ? incoming.next_seq : state.feed.next_seq
+      };
+    }
+    state.feedSeq = state.feed.next_seq >= 0 ? state.feed.next_seq : -1;
+    return true;
+  }
+
+  /** 日志行合并：首屏替换；增量在尾部追加（超出前端上限时丢最旧的行）。 */
+  function mergeLogResponse(data, incremental) {
+    var lines = (data && data.lines) || [];
+    var nextLine = numberOr(data && data.next_line, -1);
+    if (!incremental) {
+      state.logs = lines.slice();
+    } else {
+      var merged = state.logs.concat(lines);
+      if (merged.length > LOG_LINES_MAX) merged = merged.slice(merged.length - LOG_LINES_MAX);
+      state.logs = merged;
+    }
+    state.logEntries = parseTechnicalLog(state.logs);
+    state.logsError = '';
+    state.logCursor = nextLine > 0 ? nextLine - 1 : -1;
+    return true;
   }
 
   function feedItems() {
@@ -1633,6 +1951,11 @@
     state.feed = null;
     state.feedError = '';
     state.feedLoading = true;
+    /* 增量游标复位：新任务/切换任务首屏一律全量，避免拿旧游标去要增量 */
+    state.feedSeq = -1;
+    state.feedRenderedKeys = [];
+    state.logCursor = -1;
+    state.logRenderedKeys = [];
     state.detailTab = 'feed';
     state.logFilter = 'all';
     state.logRaw = false;
@@ -1686,16 +2009,55 @@
     }
   }
 
-  async function loadLogs(runId) {
+  /**
+   * 增量请求入口（M5a）。
+   *
+   * ``api.js`` 里的 ``getLogs`` / ``getRunFeed`` 只暴露全量参数，本次写入范围不含该文件，
+   * 因此这里复用 ``FS.api._request``（同一鉴权 / 超时 / 统一错误体）拼增量 URL；
+   * 静态预览 mock 没有 ``_request`` 时自动退回原来的全量接口（预览行为不变）。
+   */
+  function canIncrementalApi() {
+    return !!(FS.api && typeof FS.api._request === 'function' &&
+      typeof FS.api.isConfigured === 'function' && FS.api.isConfigured());
+  }
+
+  function fetchFeedPage(runId, sinceSeq) {
+    if (sinceSeq >= 0 && canIncrementalApi()) {
+      return FS.api._request(
+        '/api/runs/' + encodeURIComponent(runId) + '/feed?limit=' + FEED_LIMIT +
+          '&comments=' + FEED_COMMENT_PREVIEW + '&since_seq=' + sinceSeq,
+        { timeout: 10000 }
+      );
+    }
+    return FS.api.getRunFeed(runId, { limit: FEED_LIMIT, comments: FEED_COMMENT_PREVIEW });
+  }
+
+  function fetchLogsPage(runId, afterLine) {
+    if (afterLine >= 0 && canIncrementalApi()) {
+      return FS.api._request(
+        '/api/runs/' + encodeURIComponent(runId) + '/logs?tail=' + (state.logTail || 200) +
+          '&after_line=' + afterLine,
+        { timeout: 10000 }
+      );
+    }
+    return FS.api.getLogs(runId, state.logTail || 200);
+  }
+
+  /** 技术日志：``opts.incremental`` 时带 after_line 只取新行（首屏仍取尾部 N 行）。 */
+  async function loadLogs(runId, opts) {
+    opts = opts || {};
+    var incremental = !!(opts.incremental && state.logCursor >= 0 && state.logs.length);
     try {
-      var data = await FS.api.getLogs(runId, state.logTail || 200);
-      if (state.selectedRunId !== runId) return;
-      state.logs = (data && data.lines) || [];
-      state.logEntries = parseTechnicalLog(state.logs);
-      state.logsError = '';
+      var data = await fetchLogsPage(runId, incremental ? state.logCursor : -1);
+      if (state.selectedRunId !== runId) return null;
+      mergeLogResponse(data, incremental);
+      return data;
     } catch (err) {
-      if (state.selectedRunId !== runId) return;
+      if (state.selectedRunId !== runId) return null;
       state.logsError = FS.errText(err, '日志获取失败');
+      /* 增量失败（老服务端/游标失效）：下轮回退全量，避免一直拿不到日志 */
+      if (incremental) state.logCursor = -1;
+      return null;
     }
   }
 
@@ -1712,16 +2074,25 @@
     }
   }
 
-  /** 采集动态内容流：失败只记录 feedError（页面降级展示），不影响任务状态/日志。 */
-  async function loadFeed(runId) {
+  /**
+   * 采集动态内容流：失败只记录 feedError（页面降级展示），不影响任务状态/日志。
+   * ``opts.incremental``：带 since_seq 只取新条目；``opts.full``：强制全量（首屏/任务结束补拉）。
+   */
+  async function loadFeed(runId, opts) {
+    opts = opts || {};
+    var incremental = !opts.full && !!(opts.incremental && state.feedSeq >= 0 && state.feed);
     try {
-      var data = await FS.api.getRunFeed(runId, { limit: FEED_LIMIT, comments: FEED_COMMENT_PREVIEW });
-      if (state.selectedRunId !== runId) return;
-      state.feed = normalizeFeed(data);
+      var data = await fetchFeedPage(runId, incremental ? state.feedSeq : -1);
+      if (state.selectedRunId !== runId) return null;
+      mergeFeedResponse(data, incremental);
       state.feedError = '';
+      return data;
     } catch (err) {
-      if (state.selectedRunId !== runId) return;
+      if (state.selectedRunId !== runId) return null;
       state.feedError = FS.errText(err, '采集动态获取失败');
+      /* 增量失败（老服务端/游标失效）：下轮回退全量 */
+      if (incremental) state.feedSeq = -1;
+      return null;
     } finally {
       if (state.selectedRunId === runId) state.feedLoading = false;
     }
@@ -1735,57 +2106,39 @@
     }
   }
 
-  /* ------------------------------------------------------------ 轮询 */
+  /* ------------------------------------------------------------ 轮询
+     定时器统一走 FS.timers（切页 clearAll / 停止任务 / 切换任务 / destroy 都会清掉），
+     不要直接 setInterval/setTimeout。 */
   function stopPoll() {
-    if (state.pollTimer) { clearTimeout(state.pollTimer); state.pollTimer = null; }
+    if (state.pollTimer) { FS.timers.clear(state.pollTimer); state.pollTimer = null; }
   }
   function schedulePoll(delay) {
     stopPoll();
     if (!state.selectedRunId) return;
-    state.pollTimer = setTimeout(pollOnce, delay || 1500);
+    state.pollTimer = FS.timers.after(pollOnce, delay || 1500, 'tasks-detail-poll');
   }
   async function pollOnce() {
     if (!state.selectedRunId) return;
     if (FS.mode !== 'real' && !FS.previewMode) { schedulePoll(3000); return; }
     var runId = state.selectedRunId;
-    function soft(promise) {
-      return promise.then(
-        function (value) { return { ok: true, data: value }; },
-        function (error) { return { ok: false, error: error }; }
-      );
-    }
     try {
-      /* 主状态必须成功；日志与采集动态失败时各自降级，不中断轮询 */
+      /* 主状态必须成功；日志与采集动态走增量（内部各自降级），不中断轮询 */
       var results = await Promise.all([
         FS.api.getRun(runId),
-        soft(FS.api.getLogs(runId, state.logTail || 200)),
-        soft(FS.api.getRunFeed(runId, { limit: FEED_LIMIT, comments: FEED_COMMENT_PREVIEW }))
+        loadLogs(runId, { incremental: true }),
+        loadFeed(runId, { incremental: true })
       ]);
       if (state.selectedRunId !== runId) return;
       var run = results[0];
-      var logsRes = results[1];
-      var feedRes = results[2];
       var prevStatus = state.lastStatus;
       state.run = run;
       state.runError = '';
       state.pollErrors = 0;
-      if (logsRes.ok) {
-        state.logs = (logsRes.data && logsRes.data.lines) || [];
-        state.logEntries = parseTechnicalLog(state.logs);
-        state.logsError = '';
-      } else {
-        state.logsError = FS.errText(logsRes.error, '日志获取失败');
-      }
-      if (feedRes.ok) {
-        state.feed = normalizeFeed(feedRes.data);
-        state.feedError = '';
-      } else {
-        state.feedError = FS.errText(feedRes.error, '采集动态获取失败');
-      }
       state.feedLoading = false;
       upsertRunSummary(run);
       state.lastStatus = run.status;
-      renderDetail();
+      /* 原地补丁：只更新变化的部分 + 追加新帖/新行，不整块重绘（保留滚动位置） */
+      renderDetail({ live: true });
       if (prevStatus !== run.status) {
         renderRunList();
         updateFormState();
@@ -1828,10 +2181,14 @@
     refreshFeedFinal(run.run_id);
     loadRuns(true);
   }
-  /** 任务进入终态后补拉一次内容流（成功后刷新详情，失败则保留降级提示） */
+  /**
+   * 任务进入终态后补拉一次内容流：走增量（只取新增/被更新的帖子，含最后一批评论），
+   * 这样用户已经看到的卡片不会被整块替换掉；失败则保留降级提示。
+   */
   function refreshFeedFinal(runId) {
     if (state.selectedRunId !== runId) return;
-    loadFeed(runId).then(function () {
+    stopPoll(); // 终态不再轮询
+    loadFeed(runId, { incremental: true }).then(function () {
       if (state.selectedRunId !== runId) return;
       renderDetail();
       renderRunList();
@@ -1933,6 +2290,7 @@
       case 'load-more-logs':
         state.logTail = Math.min(2000, (state.logTail || 200) + 800);
         state.logEntries = [];
+        state.logCursor = -1; // 重新全量取尾部更多行
         loadLogs(state.selectedRunId).then(function () { renderDetail(); });
         break;
       case 'open-logs':

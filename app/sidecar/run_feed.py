@@ -24,19 +24,29 @@
 对外 API::
 
     build_run_feed(db_path, *, run_id="", status="", keywords=(), started_ts=None,
-                   limit=30, comments=3) -> dict
+                   limit=30, comments=3, since_seq=None) -> dict
 
-返回结构（字段名不可改）::
+增量（M5a）：``since_seq`` 为上次响应的 ``next_seq``。
+
+* 不传 ``since_seq`` → 首屏语义（``items`` 按采集时间倒序，``counts`` 全量）；
+* 传 ``since_seq`` → 只返回 ``seq > since_seq`` 的新条目（按 ``seq`` 升序）＋ ``next_seq``；
+  ``counts`` / ``comment_total`` 仍是全量；``limit`` 同样生效，超限时 ``truncated=True``
+  且 ``next_seq`` 只推进到已返回的最后一条；``since_seq`` 大于当前最大 seq 时返回空数组
+  且 ``next_seq`` 原样回传（不回退）。
+* 每条 item 带**稳定递增**的 ``seq``（按采集时间升序 / 平台顺序 / ID 分配）。
+
+返回结构（字段名不可改；``next_seq`` 与 item 的 ``seq`` 是 M5a 新增的加法字段）::
 
     {"run_id","status","keywords",
      "counts": {"content": int, "comments": int,
                 "by_platform": {"xhs": {"content": int, "comments": int}, ...}},
-     "items": [{"platform","platform_label","kind":"content","id","title","text",
+     "items": [{"platform","platform_label","kind":"content","id","seq","title","text",
                 "author","url","published_at","collected_at",
                 "metrics": {"likes","comments","collects","shares","plays"},
                 "comment_total": int,
                 "comments": [{"id","author","text","likes","published_at"}]}],
-     "truncated": bool}
+     "truncated": bool,
+     "next_seq": int}
 """
 
 from __future__ import annotations
@@ -558,7 +568,40 @@ def _empty_feed(run_id: str, status: str, keywords: Sequence[str]) -> Dict[str, 
         "counts": {"content": 0, "comments": 0, "by_platform": {}},
         "items": [],
         "truncated": False,
+        "next_seq": 0,
     }
+
+
+def _seq_sort_key(record: Dict[str, Any]) -> Tuple[int, int, str]:
+    """seq 分配口径：采集时间**升序** → 平台顺序 → ID（稳定，新行只会拿到更大的 seq）。"""
+    return (
+        int(record.get("_sort_ms") or 0),
+        _PLATFORM_ORDER.get(str(record.get("platform") or ""), 99),
+        str(record.get("id") or ""),
+    )
+
+
+def _feed_sort_key(record: Dict[str, Any]) -> Tuple[int, int, str]:
+    """首屏排序口径（与改造前逐字节一致）：采集时间**倒序** → 平台顺序 → ID。"""
+    return (
+        -int(record.get("_sort_ms") or 0),
+        _PLATFORM_ORDER.get(str(record.get("platform") or ""), 99),
+        str(record.get("id") or ""),
+    )
+
+
+def _parse_cursor(value: Any) -> Optional[int]:
+    """``since_seq`` → 非负整数游标；``None``/不可解析 → None（= 首屏语义）。
+
+    负值按 0 处理（服务层负责对真正非法的入参返回 400 ``invalid_params``）。
+    """
+    if value is None or value == "":
+        return None
+    try:
+        cursor = int(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0, cursor)
 
 
 def build_run_feed(
@@ -570,6 +613,7 @@ def build_run_feed(
     started_ts: Any = None,
     limit: Any = DEFAULT_LIMIT,
     comments: Any = DEFAULT_COMMENTS,
+    since_seq: Any = None,
 ) -> Dict[str, Any]:
     """构建一次采集任务的「采集动态」内容流（纯函数，见模块文档）。
 
@@ -579,15 +623,19 @@ def build_run_feed(
       status      run 状态（running|done|failed|cancelled，原样回显）；
       keywords    run 关键词（内容表 ``source_keyword`` 过滤，评论通过父内容过滤）；
       started_ts  run 开始时间（秒级时间戳；兼容毫秒/字符串；用于“本次 run”过滤）；
-      limit       内容条数（默认 30，clamp 1–100）；
-      comments    每条内容附带评论数（默认 3，clamp 0–10；``comment_total`` 不受此限制）。
+      limit       内容条数（默认 30，clamp 1–100；增量模式同样生效）；
+      comments    每条内容附带评论数（默认 3，clamp 0–10；``comment_total`` 不受此限制）；
+      since_seq   增量游标（上次响应的 ``next_seq``）。``None`` = 首屏全量语义。
 
     返回结构见模块文档；任何 DB/表/列/脏数据问题都不会抛异常（降级为空/跳过）。
     """
     limit_int = _clamp_int(limit, DEFAULT_LIMIT, 1, MAX_LIMIT)
     comment_limit = _clamp_int(comments, DEFAULT_COMMENTS, 0, MAX_COMMENTS)
     keyword_list = _normalize_keywords(keywords)
+    cursor = _parse_cursor(since_seq)
     feed = _empty_feed(str(run_id or ""), str(status or ""), keyword_list)
+    if cursor is not None:
+        feed["next_seq"] = max(0, cursor)  # 无 DB / 无数据时也不回退游标
 
     path = str(db_path or "").strip()
     if not path or not os.path.isfile(path):
@@ -601,16 +649,21 @@ def build_run_feed(
 
     try:
         contents, content_ids = _collect_contents(conn, keyword_list, started_ms)
-        # 排序：last_modify_ts 倒序（最新采集在前）；同毫秒按平台顺序 + ID 稳定排序
-        ordered = sorted(
-            contents,
-            key=lambda record: (
-                -int(record.get("_sort_ms") or 0),
-                _PLATFORM_ORDER.get(record.get("platform") or "", 99),
-                record.get("id") or "",
-            ),
-        )
-        visible = ordered[:limit_int]
+        # seq：稳定递增序号（采集时间升序 → 平台顺序 → ID）。首屏倒序展示、增量按 seq 升序取新行。
+        ascending = sorted(contents, key=_seq_sort_key)
+        for index, record in enumerate(ascending, 1):
+            record["seq"] = index
+        max_seq = len(ascending)
+        if cursor is None:
+            visible = sorted(contents, key=_feed_sort_key)[:limit_int]
+            truncated = len(contents) > limit_int
+            next_seq = max_seq
+        else:
+            candidates = [record for record in ascending if int(record.get("seq") or 0) > cursor]
+            visible = candidates[:limit_int]
+            truncated = len(candidates) > limit_int
+            # 无新条目 → 原样回传游标（不回退）；超限 → 只推进到已返回的最后一条
+            next_seq = int(visible[-1]["seq"]) if visible else cursor
         visible_ids: Dict[str, Set[str]] = {}
         for record in visible:
             visible_ids.setdefault(record["platform"], set()).add(record["id"])
@@ -650,6 +703,7 @@ def build_run_feed(
                 "platform_label": PLATFORM_LABELS.get(code, code),
                 "kind": "content",
                 "id": parent_id,
+                "seq": int(record.get("seq") or 0),
                 "title": record["title"],
                 "text": record["text"],
                 "author": record["author"],
@@ -682,7 +736,8 @@ def build_run_feed(
         "by_platform": by_platform,
     }
     feed["items"] = items
-    feed["truncated"] = len(contents) > limit_int
+    feed["truncated"] = bool(truncated)
+    feed["next_seq"] = int(next_seq)
     return feed
 
 

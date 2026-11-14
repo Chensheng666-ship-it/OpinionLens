@@ -1312,6 +1312,22 @@ def phase1(ctx: Ctx) -> Dict[str, Any]:
         "FakeEngine" in all_text or "模拟" in all_text or "采集" in all_text,
         all_text[:500],
     )
+    # 11.1 增量日志（M5a）：环形缓冲 + after_line（运行中走内存 sink，不走文件回退）
+    live_tail = ctx.call("GET", f"/api/runs/{run_id}/logs?tail=3")
+    live_next = live_tail.get("next_line")
+    live_after = ctx.call(
+        "GET", f"/api/runs/{run_id}/logs?after_line={max(0, int(live_next or 0) - 2)}"
+    )
+    report.check(
+        "运行中 logs 增量：after_line 只返回该行之后的新行 + next_line 不回退",
+        isinstance(live_next, int)
+        and live_next >= 1
+        and isinstance(live_after.get("lines"), list)
+        and all(isinstance(item.get("text"), str) for item in live_after["lines"])
+        and live_after.get("next_line") == live_next
+        and len(live_after["lines"]) <= 2,
+        f"next_line={live_next} after={json.dumps(live_after, ensure_ascii=False)[:300]}",
+    )
 
     # 12. 任务列表
     runs = ctx.call("GET", "/api/runs").get("runs") or []
@@ -2268,23 +2284,24 @@ def phase2(ctx: Ctx, phase1_result: Dict[str, Any]) -> None:
         feed_text[:500],
     )
     report.check(
-        "GET /api/runs/{id}/feed 契约字段：run_id/status/keywords/counts/items/truncated",
-        set(feed.keys()) == {"run_id", "status", "keywords", "counts", "items", "truncated"}
+        "GET /api/runs/{id}/feed 契约字段：run_id/status/keywords/counts/items/truncated(+next_seq)",
+        set(feed.keys()) == {"run_id", "status", "keywords", "counts", "items", "truncated", "next_seq"}
         and feed.get("run_id") == run_id
         and feed.get("status") == "done"
         and feed.get("keywords") == ["示例科技", "舆情监测"]
         and isinstance(feed.get("counts"), dict)
         and isinstance(feed.get("items"), list)
-        and isinstance(feed.get("truncated"), bool),
+        and isinstance(feed.get("truncated"), bool)
+        and isinstance(feed.get("next_seq"), int),
         json.dumps(feed, ensure_ascii=False)[:900],
     )
     feed_items = feed.get("items") or []
     item_keys = {
-        "platform", "platform_label", "kind", "id", "title", "text", "author", "url",
+        "platform", "platform_label", "kind", "id", "seq", "title", "text", "author", "url",
         "published_at", "collected_at", "metrics", "comment_total", "comments",
     }
     report.check(
-        "feed items 非空且每条字段齐全（kind=content）",
+        "feed items 非空且每条字段齐全（kind=content，含新增 seq）",
         len(feed_items) >= 1
         and all(
             set(item.keys()) == item_keys and item.get("kind") == "content"
@@ -2383,6 +2400,99 @@ def phase2(ctx: Ctx, phase1_result: Dict[str, Any]) -> None:
         "GET", "/api/runs/run_xxx/feed", expect_status=404, expect_code="RUN_NOT_FOUND"
     )
     report.check("未知 run 的 feed 返回 404 RUN_NOT_FOUND", True)
+
+    # 6.2 增量（M5a）：since_seq 值域/边界 + logs?after_line 增量
+    seqs = sorted(int(item.get("seq") or 0) for item in feed_items)
+    max_seq = seqs[-1] if seqs else 0
+    report.check(
+        "feed 首屏（不传 since_seq）行为与改造前一致：items 倒序 + counts 全量 + next_seq=最大 seq",
+        seqs == list(range(1, len(feed_items) + 1))
+        and feed.get("next_seq") == max_seq == len(feed_items)
+        and feed_counts.get("content") == len(feed_items)
+        and collected_times == sorted(collected_times, reverse=True),
+        json.dumps(
+            {"seqs": seqs, "next_seq": feed.get("next_seq"), "counts": feed_counts},
+            ensure_ascii=False,
+        )[:500],
+    )
+    tail_increment = ctx.call("GET", f"/api/runs/{run_id}/feed?since_seq={max_seq}")
+    report.check(
+        "feed since_seq=末尾 → items 为空且 next_seq 不变",
+        tail_increment.get("items") == []
+        and tail_increment.get("next_seq") == max_seq
+        and (tail_increment.get("counts") or {}).get("content") == feed_counts.get("content"),
+        json.dumps(tail_increment, ensure_ascii=False)[:600],
+    )
+    mid_seq = max_seq // 2
+    mid_increment = ctx.call("GET", f"/api/runs/{run_id}/feed?since_seq={mid_seq}&limit=100")
+    mid_items = mid_increment.get("items") or []
+    mid_pairs = [(int(item.get("seq") or 0), item.get("id")) for item in mid_items]
+    expected_pairs = sorted(
+        (int(item.get("seq") or 0), item.get("id"))
+        for item in feed_items
+        if int(item.get("seq") or 0) > mid_seq
+    )
+    report.check(
+        "feed since_seq=中间 → 只返回其后条目（seq 升序）+ counts 仍为全量",
+        mid_seq >= 1
+        and mid_pairs == expected_pairs
+        and len(mid_pairs) >= 1
+        and mid_increment.get("next_seq") == max_seq
+        and mid_increment.get("truncated") is False
+        and (mid_increment.get("counts") or {}).get("content") == feed_counts.get("content")
+        and (mid_increment.get("counts") or {}).get("comments") == feed_counts.get("comments"),
+        json.dumps(
+            {"mid": mid_seq, "pairs": mid_pairs, "expected": expected_pairs,
+             "next_seq": mid_increment.get("next_seq")},
+            ensure_ascii=False,
+        )[:700],
+    )
+    clamped_increment = ctx.call("GET", f"/api/runs/{run_id}/feed?since_seq=0&limit=0")
+    clamped_items = clamped_increment.get("items") or []
+    report.check(
+        "feed 增量 + limit clamp(0→1) → truncated=true 且 next_seq 指向已返回最后一条",
+        len(clamped_items) == 1
+        and clamped_increment.get("truncated") is True
+        and clamped_increment.get("next_seq") == int(clamped_items[0].get("seq") or 0)
+        and (clamped_increment.get("counts") or {}).get("content") == feed_counts.get("content"),
+        json.dumps(clamped_increment, ensure_ascii=False)[:700],
+    )
+    for bad_cursor in ("-1", "abc", "1.5"):
+        ctx.call_error(
+            "GET",
+            f"/api/runs/{run_id}/feed?since_seq={bad_cursor}",
+            expect_status=400,
+            expect_code="invalid_params",
+        )
+    report.check("feed 非法 since_seq（负数/非整数）→ 400 invalid_params", True)
+    log_tail = ctx.call("GET", f"/api/runs/{run_id}/logs?tail=200")
+    tail_log_lines = log_tail.get("lines") or []
+    log_next = log_tail.get("next_line")
+    last_line_text = tail_log_lines[-1]["text"] if tail_log_lines else ""
+    log_last_increment = ctx.call(
+        "GET", f"/api/runs/{run_id}/logs?after_line={max(0, int(log_next or 0) - 2)}"
+    )
+    log_ahead = ctx.call("GET", f"/api/runs/{run_id}/logs?after_line={int(log_next or 0)}")
+    log_from_head = ctx.call("GET", f"/api/runs/{run_id}/logs?after_line=0")
+    head_lines = log_from_head.get("lines") or []
+    report.check(
+        "logs?after_line 增量与 next_line 正确（只返回该行之后的新行、末尾为空、游标不回退）",
+        isinstance(log_next, int)
+        and log_next >= len(tail_log_lines) >= 1
+        and [line.get("text") for line in (log_last_increment.get("lines") or [])]
+        in ([], [last_line_text])
+        and log_last_increment.get("next_line") == log_next
+        and log_ahead.get("lines") == []
+        and int(log_ahead.get("next_line") or 0) >= log_next
+        and len(head_lines) >= 1
+        and head_lines[-1].get("text") == last_line_text
+        and log_from_head.get("next_line") == log_next,
+        json.dumps(
+            {"next_line": log_next, "last": log_last_increment.get("lines"),
+             "ahead": log_ahead.get("lines"), "head_len": len(head_lines)},
+            ensure_ascii=False,
+        )[:700],
+    )
 
     # 7. open-file：允许 exports 下真实文件
     opened = ctx.call("POST", "/api/system/open-file", body={"path": str(file_path)})

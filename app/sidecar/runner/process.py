@@ -12,9 +12,10 @@ import os
 import subprocess
 import threading
 import time
+import itertools
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from state import now_ts
 
@@ -202,14 +203,26 @@ def kill_browser_processes_by_marker(marker: str) -> List[int]:
     return killed
 
 class LogSink:
-    """一个 scope 的日志：写 ``<data-dir>/logs/<scope>.log`` 且内存保留尾部 5000 行。"""
+    """一个 scope 的日志：写 ``<data-dir>/logs/<scope>.log`` 且内存保留尾部 5000 行。
+
+    M5a 起内存部分是**环形缓冲 + 绝对行号**（``deque(maxlen=LOG_TAIL_MAX)``）：
+
+    * ``_total`` 是已写入行数（= 下一行行号，0 基），只增不减；
+    * ``page()`` 按绝对行号切片，只拷贝请求区间（不再每次把 5000 行全量 list）；
+    * 写入路径不变（先入环再落盘），不会因为上限而丢行——丢的只是最早的历史。
+    """
 
     def __init__(self, path: Path, scope: str = "", maxlen: int = LOG_TAIL_MAX) -> None:
         self.path = Path(path)
         self.scope = scope or self.path.stem
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._lines: Deque[Dict[str, Any]] = deque(maxlen=maxlen)
+        try:
+            self._maxlen = max(1, int(maxlen))
+        except (TypeError, ValueError):
+            self._maxlen = LOG_TAIL_MAX
+        self._lines: Deque[Dict[str, Any]] = deque(maxlen=self._maxlen)
+        self._total = 0
         self._closed = False
         try:
             self._fh = open(self.path, "a", encoding="utf-8", errors="replace", buffering=1)
@@ -221,17 +234,52 @@ class LogSink:
         entry = {"ts": now_ts(), "level": classify_log_level(text), "text": text}
         with self._lock:
             self._lines.append(entry)
+            self._total += 1
             if self._fh is not None and not self._closed:
                 try:
                     self._fh.write(text + "\n")
                 except Exception:  # noqa: BLE001
                     self._fh = None
 
-    def tail(self, count: int = 200) -> List[Dict[str, Any]]:
-        count = max(1, min(int(count or 200), LOG_TAIL_MAX))
+    @property
+    def next_line(self) -> int:
+        """下一行行号（0 基）= 已写入总行数。"""
         with self._lock:
-            lines = list(self._lines)
-        return lines[-count:]
+            return self._total
+
+    def _slice_locked(self, start: int, limit: Optional[int]) -> List[Dict[str, Any]]:
+        """按**绝对行号**拷贝环内切片（只拷贝需要的一段，避免每次全量 list）。"""
+        size = len(self._lines)
+        first_abs = self._total - size
+        offset = max(0, int(start) - first_abs)
+        end = size if limit is None else min(size, offset + max(0, int(limit)))
+        if offset >= end:
+            return []
+        return list(itertools.islice(self._lines, offset, end))
+
+    def tail(self, count: int = 200) -> List[Dict[str, Any]]:
+        """尾部 ``count`` 行（现状语义；count clamp 1–LOG_TAIL_MAX）。"""
+        count = max(1, min(int(count or 200), self._maxlen))
+        with self._lock:
+            return self._slice_locked(max(0, self._total - count), count)
+
+    def page(
+        self, count: int = 200, after_line: Optional[int] = None
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """返回 ``(行列表, next_line)``。
+
+        * ``after_line=None`` → 尾部 ``count`` 行（与 ``tail`` 一致）；
+        * ``after_line=N`` → 只返回行号 **> N** 的新行（0 基，单次最多 ``LOG_TAIL_MAX`` 行）。
+
+        ``next_line`` = 下一行行号（总行数），且**不回退**（客户端游标超前后保持
+        ``max(总行数, after_line + 1)``，避免重复拉取历史）。
+        """
+        count_int = max(1, min(int(count or 200), self._maxlen))
+        with self._lock:
+            if after_line is None:
+                return self._slice_locked(max(0, self._total - count_int), count_int), self._total
+            start = max(0, int(after_line) + 1)
+            return self._slice_locked(start, self._maxlen), max(self._total, start)
 
     def close(self) -> None:
         with self._lock:
@@ -247,24 +295,49 @@ class LogSink:
                 self._fh = None
 
 
-def read_log_file_tail(path: Path, count: int) -> List[Dict[str, Any]]:
-    """sidecar 重启后从日志文件读取尾部（ts 近似为文件 mtime）。"""
-    count = max(1, min(int(count or 200), LOG_TAIL_MAX))
+def read_log_file_page(
+    path: Path, count: int = 200, after_line: Optional[int] = None
+) -> Tuple[List[Dict[str, Any]], int]:
+    """sidecar 重启后从日志文件读取（行号 = 文件内 0 基行号，只增不减）。
+
+    * ``after_line=None`` → 尾部 ``count`` 行（``read_log_file_tail`` 的语义）；
+    * ``after_line=N`` → 只返回文件行号 > N 的行（单次最多 ``LOG_TAIL_MAX`` 行）。
+
+    返回 ``(行列表, next_line)``；``ts`` 仍近似为文件 mtime（与改造前一致）。
+    """
+    count_int = max(1, min(int(count or 200), LOG_TAIL_MAX))
+    is_tail = after_line is None
+    lower = 0 if is_tail else max(0, int(after_line) + 1)
+    keep: Deque[str] = deque(maxlen=count_int)
+    fresh: List[str] = []
+    total = 0
+    mtime = 0
     if not path.is_file():
-        return []
-    lines: Deque[str] = deque(maxlen=count)
+        return [], (0 if is_tail else max(0, lower))
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                lines.append(line.rstrip("\r\n"))
+            for index, line in enumerate(fh):
+                total = index + 1
+                text = line.rstrip("\r\n")
+                if not text:
+                    continue
+                if is_tail:
+                    keep.append(text)
+                    continue
+                if index < lower or len(fresh) >= LOG_TAIL_MAX:
+                    continue
+                fresh.append(text)
         mtime = int(path.stat().st_mtime)
     except OSError:
-        return []
-    return [
-        {"ts": mtime, "level": classify_log_level(text), "text": text}
-        for text in lines
-        if text
-    ]
+        return [], (0 if is_tail else max(0, lower))
+    texts = list(keep) if is_tail else fresh
+    lines = [{"ts": mtime, "level": classify_log_level(text), "text": text} for text in texts]
+    return lines, (total if is_tail else max(total, lower))
+
+
+def read_log_file_tail(path: Path, count: int) -> List[Dict[str, Any]]:
+    """sidecar 重启后从日志文件读取尾部（ts 近似为文件 mtime）。"""
+    return read_log_file_page(path, count)[0]
 
 class EngineProcess:
     """一个 engine 子进程：合并 stdout/stderr 逐行读取并分发事件。"""

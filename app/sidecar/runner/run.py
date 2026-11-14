@@ -21,7 +21,7 @@ from events import bus
 from state import StateStore, now_ts
 
 from .config import PLATFORM_LABELS, EngineStartError, ServiceError, SidecarConfig, _to_int
-from .process import EngineProcess, LogSink, read_log_file_tail
+from .process import EngineProcess, LogSink, read_log_file_page, read_log_file_tail
 
 log = logging.getLogger("sidecar.engine")  # 沿用旧 logger 名：日志输出与拆分前逐字节一致
 
@@ -438,14 +438,22 @@ class RunManager:
         aliases = self._aliases()
         return [_run_to_summary(run, aliases) for run in runs]
 
-    def logs(self, run_id: str, tail: int = 200) -> List[Dict[str, Any]]:
+    def logs(
+        self, run_id: str, tail: int = 200, after_line: Optional[int] = None
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """返回 ``(行列表, next_line)``。
+
+        ``after_line=None`` → 尾部 ``tail`` 行（现状语义）；传 ``after_line`` →
+        只返回该行号（0 基）之后的新行，``next_line`` 供前端下次轮询使用。
+        """
         if not self.state.run_exists(run_id):
             raise ServiceError("RUN_NOT_FOUND", f"采集任务不存在：{run_id}", 404)
         with self._lock:
             rt = self._runtimes.get(run_id)
+        log_path = self.cfg.logs_dir / f"run-{run_id}.log"
         if rt is not None:
-            return rt.sink.tail(tail)
-        return read_log_file_tail(self.cfg.logs_dir / f"run-{run_id}.log", tail)
+            return rt.sink.page(tail, after_line)
+        return read_log_file_page(log_path, tail, after_line)
 
     def is_running(self, run_id: str) -> bool:
         run = self.state.get_run(run_id)

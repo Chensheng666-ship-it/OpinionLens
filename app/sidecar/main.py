@@ -134,6 +134,28 @@ def _require_platform(platform: str) -> str:
     return platform
 
 
+def _optional_cursor_param(raw: Optional[str], name: str) -> Optional[int]:
+    """查询参数 → 可选非负整数游标（``since_seq`` / ``after_line``）。
+
+    * 不传 / 空串 → ``None``（= 首屏 / 尾部语义，行为与改造前一致）；
+    * 负数、非整数（``1.5``/``abc``）→ 400 ``invalid_params``（不落 422，便于前端识别）。
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        value = int(text, 10)
+    except (TypeError, ValueError) as exc:
+        raise ServiceError(
+            "invalid_params", f"{name} 必须是非负整数：{text[:40]}", 400
+        ) from exc
+    if value < 0:
+        raise ServiceError("invalid_params", f"{name} 不能为负数：{value}", 400)
+    return value
+
+
 def _normalize_run_request(payload: RunCreateRequest) -> Dict[str, Any]:
     """把请求体规范化为内部 params（keywords 支持中英文逗号拆分/去重）。"""
     keywords: List[str] = []
@@ -421,9 +443,13 @@ def create_app(cfg: SidecarConfig, token: str) -> FastAPI:
         return service.resume_run(run_id, platforms)
 
     @app.get("/api/runs/{run_id}/logs")
-    def get_run_logs(run_id: str, tail: int = 200) -> Dict[str, Any]:
-        tail = max(1, min(int(tail or 200), 5000))
-        return {"lines": service.get_run_logs(run_id, tail)}
+    def get_run_logs(
+        run_id: str, tail: int = 200, after_line: Optional[str] = None
+    ) -> Dict[str, Any]:
+        # 增量（M5a）：after_line = 0 基行号，只返回该行之后的新行；响应 {lines, next_line}
+        tail_int = max(1, min(int(tail or 200), 5000))
+        cursor = _optional_cursor_param(after_line, "after_line")
+        return service.get_run_logs(run_id, tail_int, cursor)
 
     @app.post("/api/runs/{run_id}/stop")
     def stop_run(run_id: str) -> Dict[str, Any]:
@@ -439,9 +465,13 @@ def create_app(cfg: SidecarConfig, token: str) -> FastAPI:
         return service.preview_run(run_id, limit)
 
     @app.get("/api/runs/{run_id}/feed")
-    def get_run_feed(run_id: str, limit: int = 30, comments: int = 3) -> Dict[str, Any]:
+    def get_run_feed(
+        run_id: str, limit: int = 30, comments: int = 3, since_seq: Optional[str] = None
+    ) -> Dict[str, Any]:
         # 「采集动态」内容流：limit 1–100（默认 30）/ comments 0–10（默认 3），越界由服务层 clamp
-        return service.get_run_feed(run_id, limit, comments)
+        # 增量（M5a）：since_seq = 上次响应的 next_seq，只返回 seq 更大的新条目 + next_seq
+        cursor = _optional_cursor_param(since_seq, "since_seq")
+        return service.get_run_feed(run_id, limit, comments, cursor)
 
     # ---- 报告中心 -------------------------------------------
     @app.get("/api/reports/config")

@@ -455,8 +455,16 @@ class EngineService:
     def get_run(self, run_id: str) -> Dict[str, Any]:
         return self.runs.get_run(run_id)
 
-    def get_run_logs(self, run_id: str, tail: int) -> List[Dict[str, Any]]:
-        return self.runs.logs(run_id, tail)
+    def get_run_logs(
+        self, run_id: str, tail: int = 200, after_line: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """技术日志（契约 §2.2 ``GET /api/runs/{run_id}/logs``）。
+
+        ``after_line`` 为 0 基行号：不传 → 尾部 ``tail`` 行（现状语义）；传 →
+        只返回该行之后的新行。响应固定 ``{lines, next_line}``（``next_line`` 为 M5a 加法字段）。
+        """
+        lines, next_line = self.runs.logs(run_id, tail, after_line)
+        return {"lines": lines, "next_line": next_line}
 
     def stop_run(self, run_id: str) -> Dict[str, Any]:
         return self.runs.stop(run_id)
@@ -526,12 +534,16 @@ class EngineService:
             return {"sheets": []}
         return {"sheets": result.get("sheets") or []}
 
-    def get_run_feed(self, run_id: str, limit: int = 30, comments: int = 3) -> Dict[str, Any]:
+    def get_run_feed(
+        self, run_id: str, limit: int = 30, comments: int = 3, since_seq: Optional[int] = None
+    ) -> Dict[str, Any]:
         """「采集动态」内容流（契约 §2.2 ``GET /api/runs/{run_id}/feed``）。
 
         - run 不存在 → 404 RUN_NOT_FOUND（沿用现有错误体）；
         - DB/表/列缺失、脏数据由 run_feed.build_run_feed 降级为空内容流，不报 500；
-        - limit clamp 1–100（默认 30），comments clamp 0–10（默认 3）。
+        - limit clamp 1–100（默认 30），comments clamp 0–10（默认 3）；
+        - ``since_seq``（M5a）：不传 = 首屏全量语义；传 = 只返回 ``seq > since_seq`` 的新条目
+          并带 ``next_seq``（``counts``/``comment_total`` 始终全量）。
         """
         run_raw = self.runs.get_run_raw(run_id)
         if self._feed_fn is None:
@@ -551,6 +563,7 @@ class EngineService:
                 started_ts=run_raw["started_ts"],
                 limit=limit_int,
                 comments=comment_limit,
+                since_seq=since_seq,
             )
         except Exception as exc:  # noqa: BLE001 - 内容流内部错误统一转 500（DB 缺失不在此列）
             log.exception("采集动态读取失败：%s", run_id)

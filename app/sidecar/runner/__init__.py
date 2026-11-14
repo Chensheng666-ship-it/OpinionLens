@@ -39,6 +39,7 @@ from .process import list_browser_processes
 from .process import kill_browser_processes_by_marker
 from .process import LogSink
 from .process import read_log_file_tail
+from .process import read_log_file_page
 from .process import EngineProcess
 from .process import EngineRunner
 from .guard import BUSY_GLOBAL_MESSAGE
@@ -106,6 +107,7 @@ __all__ = [
     "kill_browser_processes_by_marker",
     "LogSink",
     "read_log_file_tail",
+    "read_log_file_page",
     "EngineProcess",
     "EngineRunner",
     "BUSY_GLOBAL_MESSAGE",
