@@ -31,7 +31,6 @@ from adapters.base import (
     AlreadyLoggedIn,
     EngineIncompatible,
     EnginePatchError,
-    LOGIN_CLASSES,
     LoginOnlyDone,
     MissingSymbol,
     NetworkTransient,
@@ -39,8 +38,9 @@ from adapters.base import (
     PLATFORMS,
     QrLoadFailed,
     UpstreamSymbol,
-    _login_class,
     adapter_registry,
+    clear_contract_cache,
+    contract_cache_info,
     detect_upstream_contract,
     emit_patch_error,
     emit_patch_warning,
@@ -65,11 +65,21 @@ from adapters.content import (
     install_progress_handler,
     patch_user_hash,
 )
+from adapters.session import (
+    PatchSession,
+    current_session,
+    ensure_session,
+    reset_session,
+    start_session,
+)
 from adapters.login import (
     DEFAULT_QR_FALLBACK_SELECTORS,
     DEFAULT_QR_USER_AGENT,
+    LOGIN_CLASSES,
+    LOGIN_CLASS_CONTRACTS,
     MANUAL_KIND_LABELS,
     MANUAL_WAIT_SECONDS,
+    _login_class,
     QR_FAIL_MESSAGE,
     QR_FAIL_MESSAGE_TIEBA,
     QR_FALLBACK_SELECTORS,
@@ -263,8 +273,9 @@ class EventEmitter:
         self._lock = threading.Lock()
         self.seq = 0
         self.events: List[dict] = []
-        # 补丁 warning/error 事件需要一个出口：把最新 emitter 注册为适配器默认 sink
-        set_warning_emitter(self)
+        # 每次运行一个补丁会话：绑定本次运行的 emitter，并清空 warned_once / installed /
+        # 计数（M1.5：同进程多次跑时补丁不会串到上一次的 emitter 或"只提醒一次"状态）。
+        self.session: PatchSession = start_session(emitter=self)
 
     # -- 内部 --------------------------------------------------------------
     def _emit(self, event_type: str, fields: Dict[str, Any]) -> dict:
@@ -670,6 +681,7 @@ _ADAPTER_MODULES = (
     adapters.browser,
     adapters.login,
     adapters.content,
+    adapters.session,
     adapters.platform_xhs,
     adapters.platform_douyin,
     adapters.platform_kuaishou,

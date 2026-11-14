@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import importlib
 import logging
 import os
 import threading
@@ -35,10 +36,17 @@ from adapters.base import (
     NotLoggedIn,
     QrLoadFailed,
     UpstreamSymbol,
-    _login_class,
     emit_patch_warning,
     register_contract,
     require_patch,
+)
+from adapters.session import (
+    PatchSession,
+    current_session,
+    ensure_session,
+    remember_originals,
+    restore_originals,
+    session_lock,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型检查（避免与 patches 循环导入）
@@ -46,17 +54,34 @@ if TYPE_CHECKING:  # pragma: no cover - 仅类型检查（避免与 patches 循�
 
 log = logging.getLogger("engine.adapters.login")
 
-# 同一可选增强只提醒一次，避免每张二维码/每次轮询都刷 warning 事件
-_WARNED_ONCE: set = set()
+# platform -> (login 模块, Login 类名)。登录类契约（begin / check_login_state）由本表
+# **自动生成**，7 个平台一份来源：既不再在各 platform_*.py 手写重复，也不会漏声明
+# （M1 review：ks / wb 曾漏声明，上游改名时探测发现不了）。
+LOGIN_CLASSES: Dict[str, Tuple[str, str]] = {
+    "xhs": ("media_platform.xhs.login", "XiaoHongShuLogin"),
+    "dy": ("media_platform.douyin.login", "DouYinLogin"),
+    "ks": ("media_platform.kuaishou.login", "KuaishouLogin"),
+    "bili": ("media_platform.bilibili.login", "BilibiliLogin"),
+    "wb": ("media_platform.weibo.login", "WeiboLogin"),
+    "tieba": ("media_platform.tieba.login", "BaiduTieBaLogin"),
+    "zhihu": ("media_platform.zhihu.login", "ZhiHuLogin"),
+}
+
+
+def _login_class(platform: str) -> Any:
+    """按平台取上游 Login 类（导入失败直接抛，由调用方转 EnginePatchError）。"""
+    module_name, class_name = LOGIN_CLASSES[platform]
+    module = importlib.import_module(module_name)
+    return getattr(module, class_name)
 
 
 def _warn_once(kind: str, detail: str, platform: str = "") -> None:
-    """可选增强缺失只上报一次（仍计数一次），避免事件风暴。"""
-    key = f"{platform}:{kind}"
-    if key in _WARNED_ONCE:
+    """可选增强缺失只上报一次（去重状态在 PatchSession，reset_session 后可再次发出）。"""
+    session = current_session()
+    if not session.should_warn_once(f"{platform}:{kind}"):
         return
-    _WARNED_ONCE.add(key)
     emit_patch_warning(platform or "-", kind, detail)
+
 
 # ---- 人工接管 / 验证页检测 ---------------------------------------------------------
 # 以“可见文本/标题/URL”判断是否处于平台安全验证页（产品策略：宁可多提示不要卡死）
@@ -596,8 +621,8 @@ async def wait_manual_before_begin(
 
 # --------------------------------------------------------------------------------------
 # Patch 4b：二维码查找兜底（原选择器取不到时：先人工验证，再按平台 fallback 选择器）
+# 运行期状态（keepalive / platform）挂在 PatchSession 上，不再用模块级字典。
 # --------------------------------------------------------------------------------------
-_QR_FALLBACK_STATE: Dict[str, Any] = {}
 
 
 async def _page_user_agent(page: Any) -> str:
@@ -1186,43 +1211,56 @@ def install_qr_fallback(
     manual: Optional[ManualGate] = None,
     keepalive: bool = False,
 ) -> Dict[str, Any]:
-    """包装 find_login_qrcode / find_qrcode_img_from_canvas：验证页等待 + 原选择器 + 平台兜底。"""
+    """包装 find_login_qrcode / find_qrcode_img_from_canvas：验证页等待 + 原选择器 + 平台兜底。
+
+    幂等按 :class:`PatchSession` 记（新一次运行会重新包装，闭包拿到新 emitter）；
+    重新包装前先 ``restore_originals`` 回到上游实现，避免「包装器套包装器」。
+    """
+    session = ensure_session()
+    marker = f"install_qr_fallback:{platform}"
+    if session.is_installed(marker):
+        return {"installed": True, "selectors": QR_FALLBACK_SELECTORS.get(platform, DEFAULT_QR_FALLBACK_SELECTORS)}
     try:
         utils = mc["utils"]
         crawler_util = mc["crawler_util"]
-        if getattr(utils, "_engine_qr_fallback_installed", False):
-            return {"installed": True}
+        remember_originals(utils, ("find_login_qrcode", "find_qrcode_img_from_canvas"))
+        restore_originals(utils, ("find_login_qrcode", "find_qrcode_img_from_canvas"))
         original_find = utils.find_login_qrcode
         original_canvas = utils.find_qrcode_img_from_canvas
     except Exception as exc:  # noqa: BLE001 - 二维码提取是登录必需能力
         require_patch(platform, "install_qr_fallback", exc, emitter=emitter)
         raise  # pragma: no cover - require_patch 必然抛出
 
+    with session_lock():
+        session.state["qr_keepalive"] = bool(keepalive)
+        session.state["qr_platform"] = platform
+
+    def _keepalive_state(default: bool) -> bool:
+        return bool(session.state.get("qr_keepalive", default))
+
     async def _find_with_fallback(page: Any, selector: Any = None, **kwargs) -> str:
         sel = selector if selector is not None else kwargs.get("selector")
         sel = str(sel or "")
         print(f"[engine] find_login_qrcode 包装器进入（platform={platform}, selector={sel[:140]}）", flush=True)
-        state_keepalive = bool(_QR_FALLBACK_STATE.get("keepalive", keepalive))
         return await _run_qr_rounds(
-            page, platform, [sel] if sel else [], emitter, manual, keepalive=state_keepalive
+            page, platform, [sel] if sel else [], emitter, manual, keepalive=_keepalive_state(keepalive)
         )
 
     async def _find_canvas_with_fallback(page: Any, canvas_selector: Any = None, **kwargs) -> str:
         sel = canvas_selector if canvas_selector is not None else kwargs.get("canvas_selector")
         sel = str(sel or "")
         print(f"[engine] find_qrcode_img_from_canvas 包装器进入（platform={platform}, selector={sel[:140]}）", flush=True)
-        state_keepalive = bool(_QR_FALLBACK_STATE.get("keepalive", keepalive))
         return await _run_qr_rounds(
-            page, platform, [sel] if sel else [], emitter, manual, keepalive=state_keepalive
+            page, platform, [sel] if sel else [], emitter, manual, keepalive=_keepalive_state(keepalive)
         )
 
+    _ = (original_find, original_canvas)  # 仅作为"已记住基线"的显式说明（wrapper 走兜底流程）
     utils.find_login_qrcode = _find_with_fallback
     utils.find_qrcode_img_from_canvas = _find_canvas_with_fallback
     crawler_util.find_login_qrcode = _find_with_fallback
     crawler_util.find_qrcode_img_from_canvas = _find_canvas_with_fallback
-    utils._engine_qr_fallback_installed = True
-    _QR_FALLBACK_STATE["platform"] = platform
-    _QR_FALLBACK_STATE["keepalive"] = bool(keepalive)
+    utils._engine_qr_fallback_installed = True  # 兼容旧标记（跨模块可读）
+    session.installed.add(marker)
     return {"installed": True, "selectors": QR_FALLBACK_SELECTORS.get(platform, DEFAULT_QR_FALLBACK_SELECTORS)}
 
 # --------------------------------------------------------------------------------------
@@ -1270,8 +1308,10 @@ _NETWORK_TRANSIENT_TOKENS = (
     "network is unreachable",
     "proxy",
 )
-_NETWORK_TRANSIENT_STATE: Dict[str, Any] = {"ts": 0.0, "message": ""}
-_NETWORK_HOOK_STATE: Dict[str, Any] = {"installed": False}
+# 网络异常记录（放在 PatchSession.state，避免同进程下一次运行读到上一次的旧异常）
+_NET_TS_KEY = "network_exception_ts"
+_NET_MESSAGE_KEY = "network_exception_message"
+_NET_HOOK_KEY = "install_network_error_hook"
 
 
 def _is_network_exception(exc: BaseException) -> bool:
@@ -1281,21 +1321,27 @@ def _is_network_exception(exc: BaseException) -> bool:
 
 def _record_network_exception(exc: BaseException) -> None:
     """记录最近一次网络异常；登录被拒时据此区分“网络抖动”和“真未登录”。"""
-    _NETWORK_TRANSIENT_STATE["ts"] = time.monotonic()
-    _NETWORK_TRANSIENT_STATE["message"] = f"{type(exc).__name__}: {str(exc)[:240]}"
+    session = current_session()
+    with session_lock():
+        session.state[_NET_TS_KEY] = time.monotonic()
+        session.state[_NET_MESSAGE_KEY] = f"{type(exc).__name__}: {str(exc)[:240]}"
 
 
 def _recent_network_exception(window_seconds: float = 90.0) -> str:
-    age = time.monotonic() - float(_NETWORK_TRANSIENT_STATE.get("ts") or 0.0)
-    if _NETWORK_TRANSIENT_STATE.get("message") and age <= window_seconds:
-        return str(_NETWORK_TRANSIENT_STATE["message"])
+    state = current_session().state
+    age = time.monotonic() - float(state.get(_NET_TS_KEY) or 0.0)
+    message = state.get(_NET_MESSAGE_KEY)
+    if message and age <= window_seconds:
+        return str(message)
     return ""
 
 
 def clear_network_transient() -> None:
     """清空网络异常记录（例如忽略页面首页加载失败后，单独判断 pong 结果）。"""
-    _NETWORK_TRANSIENT_STATE["ts"] = 0.0
-    _NETWORK_TRANSIENT_STATE["message"] = ""
+    state = current_session().state
+    with session_lock():
+        state[_NET_TS_KEY] = 0.0
+        state[_NET_MESSAGE_KEY] = ""
 
 
 def install_network_error_hook() -> Dict[str, Any]:
@@ -1306,7 +1352,8 @@ def install_network_error_hook() -> Dict[str, Any]:
     都被误报成“未登录”。这里记录最近网络异常，让 patch_login_blocked 能改抛
     NetworkTransient，由 sidecar 自动重试。
     """
-    if _NETWORK_HOOK_STATE.get("installed"):
+    session = current_session()
+    if session.is_installed(_NET_HOOK_KEY):
         return {"installed": True}
     try:
         import httpx
@@ -1341,7 +1388,7 @@ def install_network_error_hook() -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - 同步客户端包装属可选增强
         log.debug("同步 httpx.Client.request 包装失败（仅影响同步请求）：%s: %s", type(exc).__name__, exc)
 
-    _NETWORK_HOOK_STATE["installed"] = True
+    session.installed.add(_NET_HOOK_KEY)
     return {"installed": True}
 
 
@@ -1350,17 +1397,24 @@ def patch_login_blocked(mc: Dict[str, Any], platform: str) -> None:
 
     若刚刚发生过网络异常（平台 pong 超时等），改抛 NetworkTransient，
     避免把网络抖动误报成“未登录”，让 sidecar 按网络错误自动重试。
+
+    幂等按 PatchSession 记（同进程可重装），重装前先把 ``begin`` 恢复到基线。
     """
+    session = ensure_session()
+    marker = f"patch_login_blocked:{platform}"
+    if session.is_installed(marker):
+        return
 
     try:
         cls = _login_class(platform)
-        if not callable(getattr(cls, "begin", None)):
+        originals = remember_originals(cls, ("begin",))
+        restore_originals(cls, ("begin",))
+        original_begin = originals["begin"]
+        if not callable(original_begin):
             raise AttributeError(f"{cls.__name__} 缺少 begin()")
     except Exception as exc:  # noqa: BLE001 - crawl 模式「未登录快速失败」是必需能力
         require_patch(platform, "patch_login_blocked", exc)
         raise  # pragma: no cover - require_patch 必然抛出
-    if getattr(cls, "_engine_login_blocked", False):
-        return
 
     async def _blocked_begin(self, *_args, **_kwargs):
         network_error = _recent_network_exception()
@@ -1369,7 +1423,8 @@ def patch_login_blocked(mc: Dict[str, Any], platform: str) -> None:
         raise NotLoggedIn()
 
     cls.begin = _blocked_begin
-    cls._engine_login_blocked = True
+    cls._engine_login_blocked = True  # 兼容旧标记（跨模块可读）
+    session.installed.add(marker)
 
 def instrument_login_class(
     mc: Dict[str, Any],
@@ -1383,40 +1438,75 @@ def instrument_login_class(
     - 包装 begin()：先等待整页验证（dy 验证码中间页 / tieba 百度安全验证）由用户完成 → 再走原登录流程；
       并标记 state["login_attempted"]=True（区分“需要扫码”与“已登录跳过登录”）
     - 包装 check_login_state()：扫码登录成功时发 login.status confirmed，并标记 state["confirmed"]
+
+    幂等：同一 PatchSession 内只包装一次（重复调用不再套一层包装器，否则事件翻倍）；
+    新一次运行（新 session）会先 ``restore_originals`` 回到基线再包装，闭包拿到当次 emitter。
     """
+    session = ensure_session()
+    marker = f"instrument_login_class:{platform}"
+    if session.is_installed(marker):
+        return
     try:
         cls = _login_class(platform)
-        if getattr(cls, "_engine_instrumented", False):
-            return
-        original_check = cls.check_login_state
-        original_begin = cls.begin
+        originals = remember_originals(cls, ("begin", "check_login_state"))
+        original_check = originals["check_login_state"]
+        original_begin = originals["begin"]
+        restore_originals(cls, ("begin", "check_login_state"))
+        if not callable(original_check) or not callable(original_begin):
+            raise AttributeError(f"{cls.__name__} 缺少 begin()/check_login_state()")
     except Exception as exc:  # noqa: BLE001 - 登录仪器化（confirmed 事件）是必需能力
         require_patch(platform, "instrument_login_class", exc, emitter=emitter)
         raise  # pragma: no cover - require_patch 必然抛出
 
+    # 当次运行的上下文进 session：下一次运行重装时读到的就是新对象，不会用到旧 emitter/state
+    if state is not None:
+        session.state["login_state"] = state
+    if manual is not None:
+        session.manual = manual
+    session.emitter = session.emitter if session.emitter is not None else emitter
+
+    def _active_state() -> Optional[Dict[str, Any]]:
+        return session.state.get("login_state") or state
+
+    def _active_emitter() -> Any:
+        return session.emitter or emitter
+
     async def _wrapped_check(self, *args, **kwargs):
         ok = await original_check(self, *args, **kwargs)
         if ok:
-            if state is not None:
-                state["confirmed"] = True
-            emitter.status("confirmed", "登录成功")
+            active_state = _active_state()
+            if active_state is not None:
+                active_state["confirmed"] = True
+            _active_emitter().status("confirmed", "登录成功")
         return ok
 
     async def _wrapped_begin(self, *args, **kwargs):
         import asyncio
 
-        if state is not None:
-            state["login_attempted"] = True
+        active_state = _active_state()
+        if active_state is not None:
+            active_state["login_attempted"] = True
         page = getattr(self, "context_page", None)
-        cleared = await wait_manual_before_begin(page, emitter, platform, manual)
+        cleared = await wait_manual_before_begin(
+            page, _active_emitter(), platform, session.manual or manual
+        )
         if not cleared:
             print(f"[engine] {platform} 人工验证未完成，继续尝试原登录流程（大概率失败）", flush=True)
         await asyncio.sleep(0.5)  # 等页面跳转稳定
         return await original_begin(self, *args, **kwargs)
 
+    # 包装层数标记：自测用它断言"只包装一次"（重复安装 → 2）
+    _wrapped_check.__engine_wrap_count__ = 1 + int(  # type: ignore[attr-defined]
+        getattr(original_check, "__engine_wrap_count__", 0) or 0
+    )
+    _wrapped_begin.__engine_wrap_count__ = 1 + int(  # type: ignore[attr-defined]
+        getattr(original_begin, "__engine_wrap_count__", 0) or 0
+    )
+
     cls.check_login_state = _wrapped_check
     cls.begin = _wrapped_begin
-    cls._engine_instrumented = True
+    cls._engine_instrumented = True  # 兼容旧标记（跨模块可读）
+    session.installed.add(marker)
 
 # --------------------------------------------------------------------------------------
 # 清理 & 登录页观察（login.status: waiting_scan / need_manual）
@@ -1506,7 +1596,7 @@ async def watch_login_page(
             emitter.status("waiting_scan", "等待手机扫码/确认…（二维码已展示，请在手机 App 上操作）")
 
 # --------------------------------------------------------------------------------------
-# 上游契约（登录 / 二维码：MediaCrawler 工具层钩子）
+# 上游契约（登录 / 二维码）
 # --------------------------------------------------------------------------------------
 UPSTREAM_CONTRACT = [
     UpstreamSymbol("login", "tools/utils.py", "show_qrcode"),
@@ -1517,4 +1607,23 @@ UPSTREAM_CONTRACT = [
     UpstreamSymbol("login", "tools/crawler_util.py", "find_qrcode_img_from_canvas"),
 ]
 
-register_contract("login", "登录 / 二维码：工具层二维码钩子与登录流程", UPSTREAM_CONTRACT)
+# 登录类契约（begin / check_login_state）：遍历 LOGIN_CLASSES **自动生成** —— 7 个平台
+# 一份来源，既不会漏声明（M1 review：ks / wb 曾漏），也不需要各 platform_*.py 手写重复。
+LOGIN_CLASS_CONTRACTS = [
+    UpstreamSymbol(
+        platform,
+        module_name.replace(".", "/") + ".py",
+        f"{class_name}.{method}",
+        platforms=(platform,),
+    )
+    for platform, (module_name, class_name) in sorted(LOGIN_CLASSES.items())
+    for method in ("begin", "check_login_state")
+]
+
+register_contract("login", "登录 / 二维码：工具层二维码钩子", UPSTREAM_CONTRACT)
+for _platform, (_module_name, _class_name) in sorted(LOGIN_CLASSES.items()):
+    register_contract(
+        _platform,
+        f"登录类 {_class_name}：begin / check_login_state（由 LOGIN_CLASSES 自动生成）",
+        [symbol for symbol in LOGIN_CLASS_CONTRACTS if symbol.owner == _platform],
+    )

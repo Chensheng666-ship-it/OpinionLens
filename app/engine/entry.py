@@ -370,7 +370,9 @@ def main(argv=None) -> int:
     except patches.EngineIncompatible as exc:
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         emit_failed = False
+        # 构造异常不再写日志（无副作用）：由抛出点在这里记录一次完整明细
         print(f"[engine] {exc.summary}", flush=True)
+        print(f"[engine] 缺失明细：{exc.details}", flush=True)
         try:
             emitter.progress("boot", 0, 0, f"[error] {exc.summary}")
             emitter.finished(ok=False, elapsed_ms=elapsed_ms, db_path=None, message=str(exc))

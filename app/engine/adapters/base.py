@@ -24,25 +24,22 @@ import importlib
 import logging
 import os
 import sys
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, NoReturn, Optional, Sequence, Tuple
 
+from adapters.session import (
+    PatchSession,
+    current_session,
+    remember_originals,
+    reset_session,
+    restore_originals,
+    session_lock,
+)
+
 log = logging.getLogger("engine.adapters")
 
 PLATFORMS: Tuple[str, ...] = ("xhs", "dy", "ks", "bili", "wb", "tieba", "zhihu")
-
-# platform -> (login 模块, Login 类名)
-LOGIN_CLASSES: Dict[str, Tuple[str, str]] = {
-    "xhs": ("media_platform.xhs.login", "XiaoHongShuLogin"),
-    "dy": ("media_platform.douyin.login", "DouYinLogin"),
-    "ks": ("media_platform.kuaishou.login", "KuaishouLogin"),
-    "bili": ("media_platform.bilibili.login", "BilibiliLogin"),
-    "wb": ("media_platform.weibo.login", "WeiboLogin"),
-    "tieba": ("media_platform.tieba.login", "BaiduTieBaLogin"),
-    "zhihu": ("media_platform.zhihu.login", "ZhiHuLogin"),
-}
 
 INSTALL_HINT = (
     "上游 MediaCrawler 版本不匹配，请按 scripts/setup_mediacrawler.ps1 的固定 commit 重装"
@@ -60,6 +57,8 @@ class EngineIncompatible(RuntimeError):
     def __init__(self, missing: Sequence["MissingSymbol"]) -> None:
         self.missing: List["MissingSymbol"] = list(missing)
         items = [item.describe() for item in self.missing]
+        # 构造函数只组装信息，不写日志（副作用会让「构造异常」变成隐式 IO）；
+        # 由抛出点（entry.main / 调用方）记录一次完整明细。
         self.details = "；".join(items)
         shown = "；".join(items[:5])
         if len(items) > 5:
@@ -71,7 +70,10 @@ class EngineIncompatible(RuntimeError):
             f"{shown}。{INSTALL_HINT}"
         )
         super().__init__(self.summary)
-        log.error("%s 缺失明细（%d 项）：%s", self.code, len(items), self.details)
+
+    def log_once(self, logger: Optional[logging.Logger] = None) -> None:
+        """在抛出点记录一次完整缺失明细（构造阶段保持无副作用）。"""
+        (logger or log).error("%s 缺失明细（%d 项）：%s", self.code, len(self.missing), self.details)
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -161,13 +163,16 @@ class MissingSymbol:
 
 
 _CONTRACTS: Dict[str, Dict[str, Any]] = {}
+_CONTRACT_VERSION = 0  # 每次登记新契约 +1：让探测缓存自动失效
 
 
 def register_contract(
     owner: str, description: str, symbols: Sequence[UpstreamSymbol]
 ) -> Sequence[UpstreamSymbol]:
     """适配器导入时登记自己的上游契约（幂等，重复登记去重）。"""
+    global _CONTRACT_VERSION
     item = _CONTRACTS.setdefault(owner, {"description": "", "symbols": []})
+    before = len(item["symbols"])
     if description:
         item["description"] = description
     seen = {(symbol.path, symbol.symbol) for symbol in item["symbols"]}
@@ -177,6 +182,9 @@ def register_contract(
             continue
         item["symbols"].append(symbol)
         seen.add(key)
+    if len(item["symbols"]) != before:
+        _CONTRACT_VERSION += 1
+        clear_contract_cache()
     return symbols
 
 
@@ -235,53 +243,33 @@ def identity_nickname(name: Any) -> str:
     return str(name)
 
 
-def _login_class(platform: str) -> Any:
-    """按平台取上游 Login 类（导入失败直接抛，由调用方转 EnginePatchError）。"""
-    module_name, class_name = LOGIN_CLASSES[platform]
-    module = importlib.import_module(module_name)
-    return getattr(module, class_name)
-
-
 # --------------------------------------------------------------------------------------
-# 补丁事件：warning 计数 / error 事件 / 必需补丁失败
+# 补丁事件：warning 计数 / error 事件 / 必需补丁失败（状态全部挂在 PatchSession 上）
 # --------------------------------------------------------------------------------------
-_PATCH_WARNING_COUNTS: Dict[str, int] = {}
-_PATCH_WARNING_TOTAL = 0
-_PATCH_ERROR_TOTAL = 0
-_EMITTER: Optional[Any] = None
-_EMITTER_LOCK = threading.Lock()
-
-
 def set_warning_emitter(emitter: Optional[Any]) -> None:
-    """登记补丁事件出口（``EventEmitter`` 构造时自动登记最新实例）。"""
-    global _EMITTER
-    with _EMITTER_LOCK:
-        _EMITTER = emitter
+    """绑定补丁事件出口（``EventEmitter`` 构造时自动绑定，等价于开始一次新会话）。"""
+    current_session().emitter = emitter
 
 
 def get_warning_emitter() -> Optional[Any]:
-    with _EMITTER_LOCK:
-        return _EMITTER
+    return current_session().emitter
 
 
 def reset_patch_warning_counts() -> None:
-    """清零计数（自测用）。"""
-    global _PATCH_WARNING_TOTAL, _PATCH_ERROR_TOTAL
-    with _EMITTER_LOCK:
-        _PATCH_WARNING_COUNTS.clear()
-        _PATCH_WARNING_TOTAL = 0
-        _PATCH_ERROR_TOTAL = 0
+    """兼容壳：等价于 :func:`adapters.session.reset_session`（清计数 + warned_once + installed）。"""
+    reset_session()
 
 
 def patch_warning_counts() -> Dict[str, Any]:
-    """当前补丁 warning 统计：``{"total": n, "items": {"platform:patch": n}}``。"""
-    with _EMITTER_LOCK:
-        return {"total": _PATCH_WARNING_TOTAL, "items": dict(_PATCH_WARNING_COUNTS)}
+    """当前会话的补丁 warning 统计：``{"total": n, "items": {"platform:patch": n}}``。"""
+    session = current_session()
+    with session_lock():
+        return {"total": session.warning_total, "items": dict(session.warning_counts)}
 
 
 def patch_error_counts() -> int:
-    with _EMITTER_LOCK:
-        return _PATCH_ERROR_TOTAL
+    with session_lock():
+        return current_session().error_total
 
 
 def _emit_patch_event(
@@ -292,16 +280,15 @@ def _emit_patch_event(
     emitter: Optional[Any] = None,
     stage: str = "boot",
 ) -> Dict[str, Any]:
-    global _PATCH_WARNING_TOTAL, _PATCH_ERROR_TOTAL
-
+    session = current_session()
     key = f"{platform}:{patch_name}"
-    with _EMITTER_LOCK:
+    with session_lock():
         if level == "warning":
-            _PATCH_WARNING_TOTAL += 1
-            count = _PATCH_WARNING_COUNTS[key] = _PATCH_WARNING_COUNTS.get(key, 0) + 1
+            session.warning_total += 1
+            count = session.warning_counts[key] = session.warning_counts.get(key, 0) + 1
         else:
-            _PATCH_ERROR_TOTAL += 1
-            count = _PATCH_ERROR_TOTAL
+            session.error_total += 1
+            count = session.error_total
 
     text = f"[{level}] 补丁 {patch_name}（platform={platform}）：{detail}"
     if level == "warning":
@@ -309,7 +296,7 @@ def _emit_patch_event(
     else:
         log.error("%s", text)
 
-    target = emitter if emitter is not None else get_warning_emitter()
+    target = emitter if emitter is not None else session.emitter
     event: Optional[dict] = None
     if target is not None:
         try:
@@ -405,6 +392,31 @@ def _resolve_symbol(module: Any, symbol: str) -> Tuple[Any, Optional[str]]:
     return node, None
 
 
+# --------------------------------------------------------------------------------------
+# 探测缓存（M2 同进程多次跑：第二次探测接近 0 成本）
+# --------------------------------------------------------------------------------------
+# 缓存键 = (解析后的 mc_root, platform, mode, 契约版本)；显式传 symbols 的探测不缓存
+# （fake 上游自测会临时替换 sys.modules，不能污染真实结果）。
+_CONTRACT_CACHE: Dict[Tuple[str, Optional[str], Optional[str], int], List[MissingSymbol]] = {}
+_CACHE_HITS = 0
+_CACHE_MISSES = 0
+
+
+def clear_contract_cache() -> None:
+    """清空探测缓存（改契约 / 自测用）。"""
+    global _CACHE_HITS, _CACHE_MISSES
+    with session_lock():
+        _CONTRACT_CACHE.clear()
+        _CACHE_HITS = 0
+        _CACHE_MISSES = 0
+
+
+def contract_cache_info() -> Dict[str, int]:
+    """探测缓存统计（自测断言命中；size=当前缓存条目数）。"""
+    with session_lock():
+        return {"hits": _CACHE_HITS, "misses": _CACHE_MISSES, "size": len(_CONTRACT_CACHE)}
+
+
 def detect_upstream_contract(
     mc_root: Any,
     platform: Optional[str] = None,
@@ -414,39 +426,54 @@ def detect_upstream_contract(
 ) -> List[MissingSymbol]:
     """真实 import + getattr 链探测适配器依赖的上游符号，返回缺失项（不抛裸异常）。
 
-    - ``symbols`` 缺省时用注册表里按 ``platform`` / ``mode`` 过滤后的契约；
+    - ``symbols`` 缺省时用注册表里按 ``platform`` / ``mode`` 过滤后的契约，并**命中缓存**；
+    - 显式传 ``symbols``（fake 上游自测）时不缓存，避免污染真实结果；
     - 只把 ``required=True`` 的缺失项计入返回值（可选增强缺失由补丁自己发 warning）；
     - 模块导入失败按「该模块下所有必需符号缺失」处理，reason 带异常类型。
     """
-    if import_path:
-        install_import_path(mc_root)
+    root = install_import_path(mc_root) if import_path else Path(mc_root).expanduser().resolve()
+    explicit = symbols is not None
+    key: Tuple[str, Optional[str], Optional[str], int] = (str(root), platform, mode, _CONTRACT_VERSION)
+    global _CACHE_HITS, _CACHE_MISSES
+    if not explicit:
+        with session_lock():
+            cached = _CONTRACT_CACHE.get(key)
+            if cached is not None:
+                _CACHE_HITS += 1
+                return list(cached)
+
     targets = list(symbols) if symbols is not None else iter_contracts(platform=platform, mode=mode)
     if not targets:
-        return []
-    _prepare_user_hash_patch()
-
-    modules: Dict[str, Tuple[Any, Optional[BaseException]]] = {}
-    missing: List[MissingSymbol] = []
-    for symbol in targets:
-        name = symbol.module
-        if name not in modules:
-            try:
-                modules[name] = (importlib.import_module(name), None)
-            except BaseException as exc:  # noqa: BLE001 - 导入失败=上游不可用
-                modules[name] = (None, exc)
-        module, error = modules[name]
-        if error is not None:
-            if symbol.required:
-                missing.append(
-                    MissingSymbol(
-                        symbol.owner,
-                        symbol.path,
-                        symbol.symbol,
-                        f"模块导入失败 {type(error).__name__}: {str(error)[:160]}",
+        missing: List[MissingSymbol] = []
+    else:
+        _prepare_user_hash_patch()
+        modules: Dict[str, Tuple[Any, Optional[BaseException]]] = {}
+        missing = []
+        for symbol in targets:
+            name = symbol.module
+            if name not in modules:
+                try:
+                    modules[name] = (importlib.import_module(name), None)
+                except BaseException as exc:  # noqa: BLE001 - 导入失败=上游不可用
+                    modules[name] = (None, exc)
+            module, error = modules[name]
+            if error is not None:
+                if symbol.required:
+                    missing.append(
+                        MissingSymbol(
+                            symbol.owner,
+                            symbol.path,
+                            symbol.symbol,
+                            f"模块导入失败 {type(error).__name__}: {str(error)[:160]}",
+                        )
                     )
-                )
-            continue
-        _value, reason = _resolve_symbol(module, symbol.symbol)
-        if reason is not None and symbol.required:
-            missing.append(MissingSymbol(symbol.owner, symbol.path, symbol.symbol, reason))
+                continue
+            _value, reason = _resolve_symbol(module, symbol.symbol)
+            if reason is not None and symbol.required:
+                missing.append(MissingSymbol(symbol.owner, symbol.path, symbol.symbol, reason))
+
+    if not explicit:
+        with session_lock():
+            _CACHE_MISSES += 1
+            _CONTRACT_CACHE[key] = list(missing)
     return missing

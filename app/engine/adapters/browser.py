@@ -152,6 +152,13 @@ def install_goto_retry(emitter: Optional[EventEmitter] = None, attempts: int = 5
     async def _goto_with_retry(self, url, *args, **kwargs):  # type: ignore[no-untyped-def]
         import asyncio
 
+        # 每次调用现取当前会话的 emitter：同进程重跑时不会把 progress 发到上一次的 emitter
+        def _current_emitter() -> Optional[Any]:
+            from adapters.session import current_session
+
+            active = current_session().emitter
+            return active if active is not None else emitter
+
         # 单次导航超时上限（默认 15s）：避免一次慢连接吃光整个登录等待预算，尽快进入重试
         if "timeout" not in kwargs:
             try:
@@ -166,8 +173,9 @@ def install_goto_retry(emitter: Optional[EventEmitter] = None, attempts: int = 5
                 if attempt > 1:
                     line = f"[engine] Page.goto 第 {attempt} 次尝试成功：{str(url)[:140]}"
                     print(line, flush=True)
-                    if emitter is not None:
-                        emitter.progress("login", 0, 0, f"导航重试成功（第 {attempt} 次）：{str(url)[:100]}")
+                    active = _current_emitter()
+                    if active is not None:
+                        active.progress("login", 0, 0, f"导航重试成功（第 {attempt} 次）：{str(url)[:100]}")
                 return result
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
@@ -182,8 +190,9 @@ def install_goto_retry(emitter: Optional[EventEmitter] = None, attempts: int = 5
                     f"{str(url)[:140]} | {first_line}"
                 )
                 print(line, flush=True)
-                if emitter is not None:
-                    emitter.progress("login", 0, 0, f"导航失败，{delay:.1f}s 后重试（{attempt}/{total}）：{first_line[:100]}")
+                active = _current_emitter()
+                if active is not None:
+                    active.progress("login", 0, 0, f"导航失败，{delay:.1f}s 后重试（{attempt}/{total}）：{first_line[:100]}")
                 await asyncio.sleep(delay)
         if last_exc is not None:  # pragma: no cover - 循环必然 return/raise
             raise last_exc

@@ -1970,6 +1970,265 @@ def test_no_silent_except_in_adapters() -> None:
 
 
 # --------------------------------------------------------------------------------------
+# 10. M1.5：登录类契约去重 / PatchSession / 探测缓存 / 异常无副作用
+# --------------------------------------------------------------------------------------
+def test_login_class_contracts_cover_all_platforms() -> None:
+    """登录类契约由 LOGIN_CLASSES 自动生成：7 平台都有 begin/check_login_state，ks/wb 不再漏。"""
+    import sys as _sys
+    import types as _types
+
+    per_platform = {
+        platform: [
+            symbol.symbol
+            for symbol in adapters.iter_contracts(platform=platform, required_only=True)
+            if "Login" in symbol.symbol
+        ]
+        for platform in patches.PLATFORMS
+    }
+    check(
+        "登录类契约: 7 个平台都有 begin + check_login_state（LOGIN_CLASSES 自动生成）",
+        all(
+            any(symbol.endswith(".begin") for symbol in symbols)
+            and any(symbol.endswith(".check_login_state") for symbol in symbols)
+            for symbols in per_platform.values()
+        ),
+        str(per_platform),
+    )
+    check(
+        "登录类契约: ks / wb 不再漏声明（M1 review 缺口）",
+        per_platform["ks"] == ["KuaishouLogin.begin", "KuaishouLogin.check_login_state"]
+        and per_platform["wb"] == ["WeiboLogin.begin", "WeiboLogin.check_login_state"],
+        f"ks={per_platform['ks']} wb={per_platform['wb']}",
+    )
+
+    # fake 上游：把 ks / wb 的 login 模块换成"有类但没 begin/check_login_state"的假模块
+    fake_modules = {}
+    for platform in ("ks", "wb"):
+        module_name, class_name = adapters.LOGIN_CLASSES[platform]
+        module = _types.ModuleType(module_name)
+        setattr(module, class_name, type(class_name, (), {}))
+        fake_modules[module_name] = module
+    symbols = [
+        symbol
+        for platform in ("ks", "wb")
+        for symbol in adapters.iter_contracts(platform=platform, required_only=True)
+        if "Login" in symbol.symbol
+    ]
+    saved = {name: _sys.modules.get(name) for name in fake_modules}
+    try:
+        _sys.modules.update(fake_modules)
+        missing = adapters.detect_upstream_contract(
+            patches.resolve_mc_root(), symbols=symbols, import_path=False
+        )
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                _sys.modules.pop(name, None)
+            else:
+                _sys.modules[name] = module
+
+    described = [item.describe() for item in missing]
+    check(
+        "登录类契约: fake 上游缺 begin/check_login_state 时探测报出 4 项缺失（ks+wb）",
+        len(missing) == 4
+        and any("KuaishouLogin.begin" in text for text in described)
+        and any("WeiboLogin.begin" in text for text in described)
+        and any("WeiboLogin.check_login_state" in text for text in described),
+        str(described),
+    )
+
+
+def test_instrument_login_class_idempotent() -> None:
+    """同一 PatchSession 内重复安装 instrument_login_class 只包装一次，事件不翻倍。"""
+    import types
+
+    login_cls = patches._login_class("xhs")
+    sink = []
+    emitter = patches.EventEmitter("xhs", "login", sink.append)  # 构造即开新 PatchSession
+    state = {"login_attempted": False, "confirmed": False}
+
+    class FakePage:
+        async def is_visible(self, selector, timeout=500):
+            return False
+
+        async def content(self):
+            return ""
+
+    class FakeBrowserContext:
+        async def cookies(self, urls=None):
+            return [{"name": "web_session", "value": "NEW-SESSION", "domain": ".xiaohongshu.com", "path": "/"}]
+
+    fake_self = types.SimpleNamespace(context_page=FakePage(), browser_context=FakeBrowserContext())
+
+    patches.instrument_login_class({}, emitter, "xhs", state, manual=None)
+    wrapped_begin = login_cls.begin
+    wrapped_check = login_cls.check_login_state
+    patches.instrument_login_class({}, emitter, "xhs", state, manual=None)  # 第二次必须 no-op
+
+    check(
+        "登录仪器化幂等: 第二次调用不再包装 begin/check_login_state（对象身份不变）",
+        login_cls.begin is wrapped_begin and login_cls.check_login_state is wrapped_check,
+    )
+    check(
+        "登录仪器化幂等: 包装层数标记为 1（没有套娃）",
+        getattr(wrapped_begin, "__engine_wrap_count__", 0) == 1
+        and getattr(wrapped_check, "__engine_wrap_count__", 0) == 1,
+        f"begin={getattr(wrapped_begin, '__engine_wrap_count__', None)}"
+        f" check={getattr(wrapped_check, '__engine_wrap_count__', None)}",
+    )
+
+    ok = run_async(login_cls.check_login_state(fake_self, "OLD-SESSION"))
+    confirmed = [e for e in sink if e["type"] == "login.status" and e["status"] == "confirmed"]
+    check(
+        "登录仪器化幂等: 调用一次 check_login_state 只发 1 条 confirmed（不翻倍）",
+        ok is True and len(confirmed) == 1 and state["confirmed"] is True,
+        str([e.get("status") for e in sink]),
+    )
+
+    # M2 场景：同进程第二次运行（新 emitter = 新 PatchSession）→ 重新包装一次、拿到新 emitter
+    sink2 = []
+    emitter2 = patches.EventEmitter("xhs", "login", sink2.append)
+    patches.instrument_login_class({}, emitter2, "xhs", state, manual=None)
+    check(
+        "登录仪器化幂等: 新会话重新包装（闭包拿到新 emitter）且仍只 1 层",
+        login_cls.begin is not wrapped_begin
+        and getattr(login_cls.begin, "__engine_wrap_count__", 0) == 1
+        and getattr(login_cls.check_login_state, "__engine_wrap_count__", 0) == 1,
+        f"begin={getattr(login_cls.begin, '__engine_wrap_count__', None)}",
+    )
+    run_async(login_cls.check_login_state(fake_self, "OLD-SESSION"))
+    old_confirmed = len([e for e in sink if e.get("status") == "confirmed"])
+    new_confirmed = len([e for e in sink2 if e.get("status") == "confirmed"])
+    check(
+        "登录仪器化幂等: 新会话事件只发到新 emitter（旧 sink 不再增长，无旧 emitter 泄漏）",
+        new_confirmed == 1 and old_confirmed == 1,
+        f"new={new_confirmed} old={old_confirmed}",
+    )
+
+
+def test_session_reset_clears_warned_once() -> None:
+    """_WARNED_ONCE 已收进 PatchSession：reset_session 之后同一个 warning 能再次发出。"""
+    sink = []
+    emitter = patches.EventEmitter("xhs", "login", sink.append)
+    login_mod = adapters.login
+
+    login_mod._warn_once("cv2_decode", "第一次缺少 cv2", platform="xhs")
+    first = len([e for e in sink if e["type"] == "progress" and "[warning]" in str(e.get("message"))])
+    login_mod._warn_once("cv2_decode", "同会话第二次", platform="xhs")
+    second = len([e for e in sink if e["type"] == "progress" and "[warning]" in str(e.get("message"))])
+    check(
+        "warning 去重: 同一会话内同一 kind 只发一次", first == 1 and second == 1, f"first={first} second={second}"
+    )
+
+    patches.reset_session()
+    emitter2 = patches.EventEmitter("xhs", "login", sink.append)  # 新一轮运行
+    login_mod._warn_once("cv2_decode", "reset 之后再次缺少 cv2", platform="xhs")
+    third = len([e for e in sink if e["type"] == "progress" and "[warning]" in str(e.get("message"))])
+    check(
+        "reset_session: 之后同一 warning 能再次发出（不再是模块级永久去重）",
+        third == 2 and first == 1 and second == 1,
+        f"third={third}",
+    )
+    check(
+        "reset_session: 新会话的 emitter 是新的（不串到旧 emitter）",
+        patches.current_session().emitter is emitter2,
+        str(patches.current_session().emitter),
+    )
+
+
+def test_detect_upstream_contract_cache() -> None:
+    """契约探测缓存：同进程第二次调用命中缓存、接近 0 成本（M2 单测依赖）。"""
+    import time
+
+    adapters.clear_contract_cache()
+    mc_root = patches.resolve_mc_root()
+
+    started = time.perf_counter()
+    first = adapters.detect_upstream_contract(mc_root)
+    t1 = time.perf_counter() - started
+    started = time.perf_counter()
+    second = adapters.detect_upstream_contract(mc_root)
+    t2 = time.perf_counter() - started
+    info = adapters.contract_cache_info()
+
+    check(
+        "探测缓存: 第二次调用命中缓存（hits=1 / misses=1 / size=1）",
+        info == {"hits": 1, "misses": 1, "size": 1},
+        str(info),
+    )
+    check(
+        "探测缓存: 结果一致且第二次接近 0 成本",
+        first == second == [] and t2 <= max(t1 * 0.5, 0.05),
+        f"t1={t1:.4f}s t2={t2:.5f}s",
+    )
+    # 显式 symbols（fake 上游）不写缓存，避免污染真实结果
+    adapters.clear_contract_cache()
+    adapters.detect_upstream_contract(
+        mc_root,
+        symbols=[adapters.UpstreamSymbol("x", "no_such/file.py", "Nope.thing")],
+        import_path=False,
+    )
+    check(
+        "探测缓存: 显式 symbols 的探测不写缓存（fake 上游不污染真实结果）",
+        adapters.contract_cache_info()["size"] == 0,
+        str(adapters.contract_cache_info()),
+    )
+
+
+def test_engine_incompatible_has_no_log_side_effect() -> None:
+    """EngineIncompatible 构造不写日志；明细挂在对象上，由抛出点 log_once 记录一次。"""
+    from unittest import mock
+
+    missing = [
+        adapters.MissingSymbol("xhs", "media_platform/xhs/client.py", "XiaoHongShuClient.begin", "属性缺失：begin")
+    ]
+    with mock.patch.object(adapters.base.log, "error") as spy:
+        exc = patches.EngineIncompatible(missing)
+    check("EngineIncompatible: 构造不再产生 log.error（无副作用）", spy.call_count == 0, f"calls={spy.call_count}")
+    check(
+        "EngineIncompatible: details/summary 仍在对象上（抛出点可记录）",
+        "media_platform/xhs/client.py:XiaoHongShuClient.begin" in exc.details
+        and "ENGINE_INCOMPATIBLE" in str(exc)
+        and exc.code == "ENGINE_INCOMPATIBLE",
+    )
+    with mock.patch.object(adapters.base.log, "error") as spy2:
+        exc.log_once()
+    check("EngineIncompatible.log_once(): 抛出点显式记录一次明细", spy2.call_count == 1, f"calls={spy2.call_count}")
+
+
+def test_facade_signature_still_stable() -> None:
+    """M1.5 改成 PatchSession 后，门面 7 个 patch_* 签名与 M1 完全一致。"""
+    import inspect
+
+    expected = {
+        "patch_user_hash": ["user_hash_module"],
+        "patch_browser_channel": ["channel"],
+        "patch_login_only": ["crawler", "state"],
+        "patch_login_blocked": ["mc", "platform"],
+        "patch_kuaishou_search": ["client_cls"],
+        "patch_weibo_comment_empty": [],
+        "patch_douyin_login_dialog": ["mc", "emitter"],
+    }
+    bad = []
+    for name, params in expected.items():
+        function = getattr(patches, name, None)
+        if not callable(function) or list(inspect.signature(function).parameters) != params:
+            bad.append(name)
+    check("门面: 7 个 patch_* 签名依旧不变（M1.5）", not bad, str(bad))
+    check(
+        "门面: PatchSession API 已转发（current_session/reset_session/start_session）",
+        isinstance(patches.current_session(), patches.PatchSession)
+        and callable(patches.reset_session)
+        and callable(patches.start_session)
+        and adapters.session.current_session() is patches.current_session(),
+    )
+    check(
+        "门面: 探测缓存 API 已转发（contract_cache_info/clear_contract_cache）",
+        callable(patches.contract_cache_info) and callable(patches.clear_contract_cache),
+    )
+
+
+# --------------------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------------------
 def main() -> int:
@@ -2017,6 +2276,12 @@ def main() -> int:
         test_facade_signature_compat,
         test_adapter_registry_complete,
         test_no_silent_except_in_adapters,
+        test_login_class_contracts_cover_all_platforms,
+        test_instrument_login_class_idempotent,
+        test_session_reset_clears_warned_once,
+        test_detect_upstream_contract_cache,
+        test_engine_incompatible_has_no_log_side_effect,
+        test_facade_signature_still_stable,
     ]
     for test in tests:
         print(f"\n--- {test.__name__} ---")

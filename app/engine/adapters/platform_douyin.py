@@ -11,7 +11,9 @@ import logging
 import time
 from typing import Any, List
 
-from adapters.base import UpstreamSymbol, _login_class, register_contract, require_patch
+from adapters.base import UpstreamSymbol, register_contract, require_patch
+from adapters.login import _login_class
+from adapters.session import ensure_session, remember_originals, restore_originals
 
 log = logging.getLogger("engine.adapters.platform_douyin")
 
@@ -115,27 +117,30 @@ async def _robust_douyin_popup_login_dialog(self: Any, initial_wait_ms: int = 60
 
 
 def patch_douyin_login_dialog(mc: Dict[str, Any], emitter: Optional[EventEmitter] = None) -> None:
-    """安装抖音登录面板稳健点击补丁（幂等）。"""
+    """安装抖音登录面板稳健点击补丁（幂等：按 PatchSession 记，新一次运行可重装）。"""
+    session = ensure_session()
+    marker = "patch_douyin_login_dialog:dy"
+    if session.is_installed(marker):
+        return
     try:
         cls = _login_class("dy")
-        if getattr(cls, "_engine_dy_popup_patched", False):
-            return
+        remember_originals(cls, ("popup_login_dialog",))
+        restore_originals(cls, ("popup_login_dialog",))
         if not callable(getattr(cls, "popup_login_dialog", None)):
             raise AttributeError(f"{cls.__name__} 缺少 popup_login_dialog()")
         cls.popup_login_dialog = _robust_douyin_popup_login_dialog  # type: ignore[assignment]
-        cls._engine_dy_popup_patched = True
+        cls._engine_dy_popup_patched = True  # 兼容旧标记（跨模块可读）
     except Exception as exc:  # noqa: BLE001 - 登录面板是登录必需能力
         require_patch("dy", "patch_douyin_login_dialog", exc, emitter=emitter)
         raise  # pragma: no cover - require_patch 必然抛出
+    session.installed.add(marker)
     print("[engine] 已安装抖音登录按钮稳健点击补丁（短超时+force+ESC，不再卡 30s）", flush=True)
 
 # --------------------------------------------------------------------------------------
 # 上游契约（抖音登录面板 / 客户端）
+# begin / check_login_state 由 login.py 遍历 LOGIN_CLASSES 自动生成，这里只留抖音特有符号。
 # --------------------------------------------------------------------------------------
 UPSTREAM_CONTRACT = [
-    UpstreamSymbol("dy", "media_platform/douyin/login.py", "DouYinLogin", platforms=("dy",)),
-    UpstreamSymbol("dy", "media_platform/douyin/login.py", "DouYinLogin.begin", platforms=("dy",)),
-    UpstreamSymbol("dy", "media_platform/douyin/login.py", "DouYinLogin.check_login_state", platforms=("dy",)),
     UpstreamSymbol(
         "dy",
         "media_platform/douyin/login.py",

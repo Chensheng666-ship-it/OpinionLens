@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from adapters.base import (
     UpstreamSymbol,
@@ -105,11 +105,27 @@ class ProgressLogHandler(logging.Handler):
             return
 
 
+# 当前挂着的 Handler：同进程重跑时先摘掉旧的，避免同一条日志发两次 progress
+_ACTIVE_PROGRESS_HANDLER: Optional["ProgressLogHandler"] = None
+
+
 def install_progress_handler(mc: Dict[str, Any], emitter: EventEmitter) -> ProgressLogHandler:
-    """挂 MediaCrawler 日志 Handler（可选增强）：挂不上也返回可用 handler，调用方不改。"""
+    """挂 MediaCrawler 日志 Handler（可选增强）：挂不上也返回可用 handler，调用方不改。
+
+    幂等：先摘掉本模块上一次挂的 Handler（M2 同进程多次跑时不会重复发 progress 事件）。
+    """
+    global _ACTIVE_PROGRESS_HANDLER
     handler = ProgressLogHandler(emitter)
     try:
-        mc["utils"].logger.addHandler(handler)
+        logger = mc["utils"].logger
+        previous = _ACTIVE_PROGRESS_HANDLER
+        if previous is not None:
+            try:
+                logger.removeHandler(previous)
+            except Exception as exc:  # noqa: BLE001 - 旧 Handler 已不在 logger 上
+                log.debug("移除旧 progress Handler 失败：%s: %s", type(exc).__name__, exc)
+        logger.addHandler(handler)
+        _ACTIVE_PROGRESS_HANDLER = handler
     except Exception as exc:  # noqa: BLE001 - 进度事件是可观测性增强，不阻断采集
         emit_patch_warning(
             getattr(emitter, "platform", "-") or "-",
