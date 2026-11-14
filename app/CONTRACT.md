@@ -96,6 +96,16 @@ python engine/entry.py --mode crawl --platform xhs --keywords "示例科技" --m
 - `test` 模式：只做登录态探测（见 1.3），不启动登录流程、不搜索。
 - `crawl` 模式：使用已保存登录态；未登录时 `engine.finished ok:false, message:"未登录"`（不拉起扫码）。
 
+- **补丁告警与上游不兼容（2026-11-15）**：适配器层不再静默吞异常，统一复用 `progress` 事件上报（`stage="boot"`），
+  **不新增事件类型**：
+  - 可选补丁失败（不丢核心能力）：`{"type":"progress","platform":"xhs","stage":"boot","message":"[warning] <patch_name> <detail>","ts":...}`，
+    同时计入 `patches.patch_warning_counts()`（供自测断言；不对外暴露 API）；
+  - 必需补丁失败（登录/二维码/user_hash/采集拦截）：先发 `[error]` 级 `progress`，再 `engine.finished ok:false`，
+    message 含 `patch_name`；
+  - **上游契约不兼容**：`run_mode` 之前对本次 platform/mode 做一次符号探测（复用既有 import，单平台约 1–2.5s）。
+    缺失时发 `[error] ENGINE_INCOMPATIBLE: 缺失 N 个必需符号（前 5 项…）`，随后 `engine.finished ok:false`，
+    **进程退出码 2**。字段名与前缀约定不变，sidecar 仍以事件为准。
+
 ### 1.3 必须实现的 patch（写在 patches.py，入口统一调用）
 
 1. **真实数据不脱敏**：在 import MediaCrawler 业务模块之前，把 `tools.user_hash.anonymize_user_id` / `mask_nickname` 替换为恒等函数（raw user_id → 存入 `creator_hash` 列、raw nickname）。导出时列名改回 `user_id`。**注意导入顺序**：先 `import tools.utils`，再 patch，再 `import main`（否则 `proxy` 循环导入报错，探针已踩过）。
