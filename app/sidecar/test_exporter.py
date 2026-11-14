@@ -56,12 +56,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from exporter import (  # noqa: E402
+    EXPORT_SCHEMA_MISMATCH,
     FILTERED_REASON_COLUMN,
     OFF_BRAND,
+    PLATFORM_SHEETS,
     RELEVANCE_RULE_DESCRIPTION,
     SENTIMENT_COLUMN,
     SENTIMENT_REASON_COLUMN,
     SHEETS,
+    SHEET_SPECS,
+    ExportSchemaMismatch,
     content_filtered_reason,
     export_run_excel,
     format_time,
@@ -71,8 +75,10 @@ from exporter import (  # noqa: E402
     output_columns,
     preview_run,
     preview,
+    resolve_sheet_columns,
     sanitize_excel_text,
 )
+from report_data import PLATFORM_LABELS  # noqa: E402  (平台中文名单一来源)
 
 DEFAULT_EXCEL = os.environ.get("PIPELINE_SAMPLE_EXCEL", "")
 FIXTURE_DIR = os.path.join(HERE, "_fixtures")
@@ -410,6 +416,7 @@ def _build_fixture_rows(dataset: Dict[str, List[Dict[str, Any]]]) -> Dict[str, D
     expected: Dict[str, Any] = {
         "content_expected_ids": {},
         "sheet_rows": {},
+        "first_rows": {},
         "content_time_expect": {},
         "add_ts_expect": {},
         "serial_case": {},
@@ -482,6 +489,8 @@ def _build_fixture_rows(dataset: Dict[str, List[Dict[str, Any]]]) -> Dict[str, D
             keep = [row for row in rows
                     if _to_text(row.get(parent_col)) in ids and _row_updated(row)]
             expected["sheet_rows"][spec["name"]] = len(keep)
+        # 等价性断言用：按 DB 顺序（rowid 顺序）保留的前 2 行原始值
+        expected["first_rows"][spec["name"]] = keep[:2]
 
     # 时间格式期望（取每个内容表第 2 行：偶数行且时间在窗口内，必然被导出）
     for spec in SHEETS:
@@ -1996,6 +2005,282 @@ def test_sentiment_columns(check: _Checker) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 12/13/14：P1-2 声明式列规格 + 导出自检 + 与旧实现等价
+# ---------------------------------------------------------------------------
+def test_sheet_specs(check: _Checker, fixture: Dict[str, Any], fixture_db: str) -> None:
+    check.section("16) 声明式列规格：SHEET_SPECS / 规格 vs 旧派生 / 平台单一来源")
+    check.check("SHEET_SPECS 首表为 概览", SHEET_SPECS[0].name == "概览" and SHEET_SPECS[0].kind == "overview",
+                f"{SHEET_SPECS[0].name}/{SHEET_SPECS[0].kind}")
+    check.check("SHEET_SPECS = 概览 + 14 张数据表（7 平台 × 内容/评论）",
+                len(SHEET_SPECS) == 15 and len(SHEETS) == 14,
+                f"{len(SHEET_SPECS)}/{len(SHEETS)}")
+    check.check("SHEETS 由 SHEET_SPECS 派生（tab 名/表名/顺序一致）",
+                [(s["name"], s["table"]) for s in SHEETS]
+                == [(s.name, s.table) for s in SHEET_SPECS[1:]])
+    expected_names: List[str] = []
+    expected_tables: List[str] = []
+    for platform in PLATFORM_SHEETS:
+        expected_names.extend([PLATFORM_LABELS[platform.code], PLATFORM_LABELS[platform.code] + "评论"])
+        expected_tables.extend([platform.content_table, platform.comment_table])
+    check.check("平台清单来自单一常量（PLATFORM_LABELS + PLATFORM_SHEETS）",
+                [s["name"] for s in SHEETS] == expected_names
+                and [s["table"] for s in SHEETS] == expected_tables,
+                f"{[s['name'] for s in SHEETS][:3]} != {expected_names[:3]}")
+    check.check("每张数据表列规格都以 filtered_reason/sentiment/sentiment_reason 结尾",
+                all([col.label for col in spec.columns][-3:]
+                    == [FILTERED_REASON_COLUMN, SENTIMENT_COLUMN, SENTIMENT_REASON_COLUMN]
+                    for spec in SHEET_SPECS[1:]))
+    check.check("creator_hash 列在规格中输出为 user_id",
+                any(col.label == "user_id" and col.field == "creator_hash"
+                    for spec in SHEET_SPECS[1:] for col in spec.columns))
+
+    # 规格列 vs 旧派生（output_columns(db_columns) + 三个计算列）：逐表严格等价
+    mismatched: List[str] = []
+    strict_failures: List[str] = []
+    conn = open_readonly(fixture_db)
+    try:
+        for spec in SHEET_SPECS[1:]:
+            if spec.table not in fixture["tables"]:
+                continue
+            db_columns = [row["name"] for row in conn.execute(f'PRAGMA table_info("{spec.table}")')]
+            try:
+                resolved = resolve_sheet_columns(spec, db_columns, strict=True)
+            except ExportSchemaMismatch as exc:
+                strict_failures.append(f"{spec.name}: {exc}")
+                continue
+            legacy = [pair[0] for pair in output_columns(db_columns)] + [
+                FILTERED_REASON_COLUMN, SENTIMENT_COLUMN, SENTIMENT_REASON_COLUMN,
+            ]
+            if [pair[0] for pair in resolved.pairs] != legacy:
+                mismatched.append(f"{spec.name}: {[pair[0] for pair in resolved.pairs]} != {legacy}")
+    finally:
+        conn.close()
+    check.check("严格模式下 fixture 每张表都无缺列/未声明列", not strict_failures, "; ".join(strict_failures[:2]))
+    check.check("规格列 = 旧 output_columns 派生结果（含末尾三列）", not mismatched, "; ".join(mismatched[:2]))
+
+    # 旧库兼容：只有 user_id（无 creator_hash）时回退命中
+    legacy_columns = ["id", "user_id", "nickname", "add_ts", "last_modify_ts", "note_id", "source_keyword"]
+    legacy_resolved = resolve_sheet_columns(SHEET_SPECS[1], legacy_columns)
+    check.check("旧库 user_id 列通过 fallbacks 命中（不误报缺列）",
+                ("user_id", "user_id") in legacy_resolved.pairs
+                and "user_id" not in legacy_resolved.missing,
+                str(legacy_resolved.missing))
+    check.check("旧库缺展示列只在 missing 里记录、不抛错",
+                "video_url" not in [pair[0] for pair in legacy_resolved.pairs]
+                and "video_url" in legacy_resolved.missing)
+
+    # 导出返回值带自检报告
+    tmp_dir = tempfile.mkdtemp(prefix="exporter_schema_ok_")
+    try:
+        result = export_run_excel(fixture_db, os.path.join(tmp_dir, "out"), "run_schema_ok",
+                                  [KEYWORD_MAIN], fixture["started_ts"],
+                                  app_db_path=os.path.join(tmp_dir, "no-cache.db"))
+        report = result.get("schema") or {}
+        check.check("导出返回 schema 自检报告（ok=True, strict=False）",
+                    report.get("ok") is True and report.get("strict") is False, str(report)[:120])
+        check.check("schema 报告覆盖每个导出 sheet",
+                    set(report.get("sheets") or {}) == {item["name"] for item in result["sheets"]},
+                    str(sorted(report.get("sheets") or {}))[:120])
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _make_export_db(tmp_dir: str, tag: str, table: str, columns: Sequence[str],
+                    insert_columns: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
+    """建一个只有单表的临时库（用于制造 schema 漂移）。"""
+    db_path = os.path.join(tmp_dir, f"{table}_{tag}.db")
+    if os.path.exists(db_path):
+        os.remove(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        _create_table(conn, table, columns)
+        if rows:
+            _insert_rows(conn, table, insert_columns, rows)
+        conn.commit()
+    finally:
+        conn.close()
+    return db_path
+
+
+def test_schema_guard(check: _Checker) -> None:
+    check.section("17) 导出自检：EXPORT_SCHEMA_MISMATCH（缺结构列 / 缺展示列 / 未声明列）")
+    base = int(datetime(2026, 11, 9, 10, 0, 0).timestamp())
+    new_ms = (base + 60) * 1000
+    tmp_dir = tempfile.mkdtemp(prefix="exporter_schema_guard_")
+    try:
+        # --- 1) 结构列缺失（内容 ID 列）→ 默认模式直接抛错 ---
+        no_id_cols = [c for c in ORM_COLUMNS["xhs_note"] if c != "note_id"]
+        no_id_db = _make_export_db(
+            tmp_dir, "no_note_id", "xhs_note", no_id_cols,
+            ["creator_hash", "nickname", "add_ts", "last_modify_ts", "type", "title", "desc",
+             "source_keyword"],
+            [("creator_x", "作者", new_ms, new_ms, "normal", "标题", "正文", KEYWORD_MAIN)],
+        )
+        try:
+            export_run_excel(no_id_db, os.path.join(tmp_dir, "out1"), "run_missing_id",
+                             [KEYWORD_MAIN], base)
+            check.check("缺结构列（note_id）应抛 EXPORT_SCHEMA_MISMATCH", False, "未抛错")
+        except ExportSchemaMismatch as exc:
+            check.check("缺结构列（note_id）应抛 EXPORT_SCHEMA_MISMATCH", True)
+            check.check("错误码为 EXPORT_SCHEMA_MISMATCH", exc.code == EXPORT_SCHEMA_MISMATCH,
+                        str(exc.code))
+            check.check("错误信息含缺失列名 note_id", "note_id" in str(exc), str(exc))
+            check.check("异常记录 missing_required = ('note_id',)", exc.missing_required == ("note_id",),
+                        str(exc.missing_required))
+            check.check("结构列缺失属于 sheet「小红书」", exc.sheet == "小红书", exc.sheet)
+        except Exception as exc:  # noqa: BLE001
+            check.check("缺结构列应抛 ExportSchemaMismatch（其余异常算失败）", False,
+                        f"{type(exc).__name__}: {exc}")
+
+        # --- 2) 展示列缺失（video_url）：strict 抛错；默认模式跳过并记录 ---
+        no_field_cols = [c for c in ORM_COLUMNS["xhs_note"] if c != "video_url"]
+        no_field_db = _make_export_db(
+            tmp_dir, "no_video_url", "xhs_note", no_field_cols,
+            ["creator_hash", "nickname", "add_ts", "last_modify_ts", "note_id", "type", "title", "desc",
+             "source_keyword"],
+            [("creator_x", "作者", new_ms, new_ms, "n1", "normal", "示例科技发布", "正文", "示例科技")],
+        )
+        try:
+            export_run_excel(no_field_db, os.path.join(tmp_dir, "out2"), "run_strict_missing",
+                             [KEYWORD_MAIN], base, strict_schema=True)
+            check.check("strict 模式：规格有声明的展示列缺失 → 抛错", False, "未抛错")
+        except ExportSchemaMismatch as exc:
+            check.check("strict 模式：规格有声明的展示列缺失 → 抛错", True)
+            check.check("strict 错误信息含缺失列名 video_url", "video_url" in str(exc), str(exc))
+        result = export_run_excel(no_field_db, os.path.join(tmp_dir, "out2"), "run_missing_field",
+                                  [KEYWORD_MAIN], base)
+        workbook = load_workbook(result["file_path"])
+        try:
+            header = [c.value for c in workbook["小红书"][1]]
+        finally:
+            workbook.close()
+        check.check("默认模式：缺展示列仍可导出（旧库兼容），表头不含该列",
+                    result["total_rows"] == 1 and "video_url" not in header, str(header[:6]))
+        check.check("默认模式：schema 报告记录缺失列（不再静默）",
+                    "video_url" in (result["schema"]["sheets"]["小红书"]["missing"]),
+                    str(result["schema"]["sheets"]["小红书"]["missing"]))
+
+        # --- 3) 未声明列（上游 ORM 新增字段）：strict 抛错；默认模式追加并记录 ---
+        extra_db = _make_export_db(
+            tmp_dir, "extra_ai_judge", "xhs_note", ORM_COLUMNS["xhs_note"] + ["ai_judge"],
+            ["creator_hash", "nickname", "add_ts", "last_modify_ts", "note_id", "type", "title", "desc",
+             "source_keyword", "ai_judge"],
+            [("creator_x", "作者", new_ms, new_ms, "n1", "normal", "示例科技发布", "正文", "示例科技",
+              "正面")],
+        )
+        try:
+            export_run_excel(extra_db, os.path.join(tmp_dir, "out3"), "run_strict_extra",
+                             [KEYWORD_MAIN], base, strict_schema=True)
+            check.check("strict 模式：DB 存在未声明列 → 抛错", False, "未抛错")
+        except ExportSchemaMismatch as exc:
+            check.check("strict 模式：DB 存在未声明列 → 抛错", True)
+            check.check("strict 错误信息含未声明列名 ai_judge", "ai_judge" in str(exc), str(exc))
+        result = export_run_excel(extra_db, os.path.join(tmp_dir, "out3"), "run_extra",
+                                  [KEYWORD_MAIN], base)
+        workbook = load_workbook(result["file_path"])
+        try:
+            header = [c.value for c in workbook["小红书"][1]]
+            rows = [dict(zip(header, r)) for r in workbook["小红书"].iter_rows(min_row=2, values_only=True)]
+        finally:
+            workbook.close()
+        check.check("默认模式：未声明列追加在计算列之前并原样输出",
+                    "ai_judge" in header and header[-3:] == [FILTERED_REASON_COLUMN, SENTIMENT_COLUMN,
+                                                             SENTIMENT_REASON_COLUMN]
+                    and rows and rows[0].get("ai_judge") == "正面",
+                    str(header[-5:]))
+        check.check("默认模式：schema 报告记录未声明列",
+                    "ai_judge" in (result["schema"]["sheets"]["小红书"]["extra"]),
+                    str(result["schema"]["sheets"]["小红书"]["extra"]))
+
+        # --- 4) 规格表有、DB 没有的列可直接由 resolve_sheet_columns 断言 ---
+        spec = next(item for item in SHEET_SPECS if item.table == "xhs_note")
+        try:
+            resolve_sheet_columns(spec, [c for c in ORM_COLUMNS["xhs_note"] if c != "note_id"], strict=True)
+            check.check("resolve_sheet_columns(strict=True) 对缺列抛错", False)
+        except ExportSchemaMismatch as exc:
+            check.check("resolve_sheet_columns(strict=True) 对缺列抛错", "note_id" in str(exc), str(exc))
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _expected_reason(row: Dict[str, Any]) -> str:
+    """测试侧独立实现的相关性期望（不复用 exporter.content_filtered_reason）。"""
+    tokens = [token for token in re.split(r"[,，、;；\s|]+", str(row.get("source_keyword") or ""))
+              if token.strip()]
+    if not tokens:
+        return OFF_BRAND
+    haystack = "\n".join(
+        str(row.get(column) or "")
+        for column in ("title", "desc", "content", "content_text", "nickname", "user_nickname")
+        if row.get(column) not in (None, "")
+    ).lower()
+    if not haystack:
+        return OFF_BRAND
+    return "" if any(token.strip().lower() in haystack for token in tokens) else OFF_BRAND
+
+
+def _expected_cell(table: str, column: str, row: Dict[str, Any]) -> Any:
+    """测试侧独立实现的单元格期望（时间格式化 / ID 文本化 / 其余原样）。"""
+    if column == FILTERED_REASON_COLUMN:
+        value: Any = _expected_reason(row)
+    elif column in (SENTIMENT_COLUMN, SENTIMENT_REASON_COLUMN):
+        value = ""  # 本测试显式传入不存在的 app.db → 无情感缓存
+    else:
+        db_column = "creator_hash" if column == "user_id" else column
+        raw = row.get(db_column if db_column in row else column)
+        if db_column in TIME_FIELDS:
+            unit = TS_UNITS.get((table, db_column))
+            if unit is None and db_column in ("add_ts", "last_modify_ts"):
+                unit = "ms"
+            if isinstance(raw, (int, float)) and 20000 <= float(raw) <= 80000:
+                unit = None  # Excel 日期序列号（fixture 特殊用例）
+            value = _expected_time_text(raw, unit)
+        elif column in ID_COLUMNS or db_column in ID_COLUMNS:
+            value = _to_text(raw)
+        else:
+            value = "" if raw is None else raw
+    # 空字符串写入 Excel 后读回来是 None（与旧实现一致），期望值同步归一
+    return None if value == "" else value
+
+
+def test_export_equivalence(check: _Checker, fixture: Dict[str, Any], fixture_db: str) -> None:
+    check.section("18) 导出的 Excel 与旧实现等价（3 张表：表头 + 前 2 行取值）")
+    tmp_dir = tempfile.mkdtemp(prefix="exporter_equivalent_")
+    try:
+        result = export_run_excel(fixture_db, os.path.join(tmp_dir, "out"), "run_equivalent",
+                                  [KEYWORD_MAIN], fixture["started_ts"],
+                                  app_db_path=os.path.join(tmp_dir, "no-cache.db"))
+        workbook = load_workbook(result["file_path"])
+        try:
+            for sheet_name, table in (("小红书", "xhs_note"), ("抖音", "douyin_aweme"),
+                                      ("B站", "bilibili_video")):
+                ws = workbook[sheet_name]
+                header = [cell.value for cell in ws[1]]
+                expected_header = [pair[0] for pair in output_columns(ORM_COLUMNS[table])] + [
+                    FILTERED_REASON_COLUMN, SENTIMENT_COLUMN, SENTIMENT_REASON_COLUMN,
+                ]
+                check.check(f"{sheet_name} 表头与旧实现逐列一致", header == expected_header,
+                            f"{header[:4]}... != {expected_header[:4]}...")
+                kept = fixture["expected"]["first_rows"].get(sheet_name) or []
+                if len(kept) < 2:
+                    check.check(f"{sheet_name} fixture 至少 2 行数据", False, str(len(kept)))
+                    continue
+                for offset in range(2):
+                    actual = [cell.value for cell in ws[offset + 2]]
+                    expected = [_expected_cell(table, column, kept[offset]) for column in header]
+                    check.check(f"{sheet_name} 第 {offset + 1} 行取值与旧实现一致", actual == expected,
+                                json.dumps({"actual": actual[:6], "expected": expected[:6]},
+                                           ensure_ascii=False, default=str))
+                check.check(f"{sheet_name} 行数与 fixture 期望一致",
+                            ws.max_row - 1 == fixture["expected"]["sheet_rows"][sheet_name],
+                            f"{ws.max_row - 1}")
+        finally:
+            workbook.close()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 def main(argv: Optional[List[str]] = None) -> int:
@@ -2049,6 +2334,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     test_excel_export_safety(check)
     test_real_db_run_d466(check)
     test_sentiment_columns(check)
+    test_sheet_specs(check, fixture, FIXTURE_DB)
+    test_schema_guard(check)
+    test_export_equivalence(check, fixture, FIXTURE_DB)
 
     code = check.summary()
     if code == 0:
@@ -2060,3 +2348,5 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

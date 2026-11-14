@@ -558,6 +558,187 @@ def test_poc_modules() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 7/8/9：P1-1 拆分后的门面契约 / 数据包 schema 校验 / 关键统计值不变
+# ---------------------------------------------------------------------------
+FACADE_NAMES = [
+    "build_report_package", "load_report_dataset", "load_sentiment_cache",
+    "upsert_sentiment", "upsert_sentiments", "normalize_sentiment_label",
+    "DEFAULT_PLATFORMS", "PLATFORM_LABELS", "SENTIMENT_CN", "SCHEMA_VERSION",
+    "APP_VERSION", "CONTENT_SPECS", "COMMENT_SPECS", "TZ", "parse_publish_time",
+    "parse_window", "poc_pipeline_dir", "load_poc_modules",
+]
+
+
+def test_facade_surface() -> None:
+    section("7) 拆分后 report_data 门面：对外名字齐全且指向子模块实现")
+    import importlib
+
+    report_data = importlib.import_module("report_data")
+    report_dataset = importlib.import_module("report_dataset")
+    report_package = importlib.import_module("report_package")
+    report_sentiment = importlib.import_module("report_sentiment")
+
+    missing = [name for name in FACADE_NAMES if not hasattr(report_data, name)]
+    check("门面导出名齐全（inspect 断言）", missing == [], str(missing))
+    declared = set(getattr(report_data, "__all__", []) or [])
+    check("门面 __all__ 覆盖关键公共名", all(name in declared for name in FACADE_NAMES),
+          str([name for name in FACADE_NAMES if name not in declared]))
+
+    checks = [
+        ("build_report_package", report_package.build_report_package),
+        ("validate_report_package", report_package.validate_report_package),
+        ("load_report_dataset", report_dataset.load_report_dataset),
+        ("load_sentiment_cache", report_sentiment.load_sentiment_cache),
+        ("upsert_sentiment", report_sentiment.upsert_sentiment),
+        ("upsert_sentiments", report_sentiment.upsert_sentiments),
+        ("normalize_sentiment_label", report_sentiment.normalize_sentiment_label),
+    ]
+    same = [name for name, impl in checks if getattr(report_data, name) is not impl]
+    check("门面名字指向子模块同一实现（不是复制体）", same == [], str(same))
+    check("report_data.py 只剩门面（不含实现函数体）",
+          "def build_report_package" not in open(
+              os.path.join(HERE, "report_data.py"), encoding="utf-8").read())
+    for module, functions in (
+        ("report_dataset.py", ("load_report_dataset",)),
+        ("report_package.py", ("build_report_package", "validate_report_package")),
+        ("report_sentiment.py", ("analyze_dataset_sentiment", "load_sentiment_cache")),
+        ("report_common.py", ("load_poc_modules", "parse_publish_time")),
+    ):
+        path = os.path.join(HERE, module)
+        body = open(path, encoding="utf-8").read()
+        check(f"{module} 存在且实现目标函数", os.path.isfile(path)
+              and all(f"def {name}(" in body for name in functions))
+    check("数据包结构用 TypedDict 建模（ReportPackage 有 __required_keys__）",
+          isinstance(getattr(report_package.ReportPackage, "__required_keys__", None), frozenset),
+          str(type(getattr(report_package.ReportPackage, "__required_keys__", None))))
+    required_keys = set(report_package.ReportPackage.__required_keys__)
+    check("ReportPackage 必填键覆盖 schema_version/counts/stats/samples/meta",
+          {"schema_version", "package_id", "generated_at", "source", "report", "counts",
+           "stats", "samples", "contents", "meta"} <= required_keys, str(sorted(required_keys)))
+    check("ReportPackage.instruction 为可选键",
+          "instruction" in set(report_package.ReportPackage.__optional_keys__),
+          str(report_package.ReportPackage.__optional_keys__))
+    for block in ("CountsBlock", "StatsBlock", "SamplesBlock", "MetaBlock", "TotalsBlock"):
+        check(f"TypedDict {block} 存在且有关键约束",
+              bool(getattr(report_package, block).__annotations__), block)
+
+
+def test_package_schema_guard(media_db: str) -> None:
+    section("8) 数据包 schema 校验：缺字段/类型不对 → REPORT_PACKAGE_INVALID")
+    import copy
+
+    from report_package import REPORT_PACKAGE_INVALID, ReportPackageInvalid, validate_report_package
+
+    with tempfile.TemporaryDirectory(prefix="rd_schema_") as tmp_dir:
+        package = build_report_package(
+            media_db, WINDOW_START, WINDOW_END, KEYWORDS, DEFAULT_PLATFORMS, None,
+            app_db_path=os.path.join(tmp_dir, "app.db"), report_date=WINDOW_END,
+        )
+    check("build_report_package 返回值通过 schema 校验",
+          validate_report_package(package) is package)
+
+    def _drop(path: str):
+        def mutate(pkg: Dict[str, Any]) -> None:
+            parts = path.split(".")
+            target = pkg
+            for part in parts[:-1]:
+                target = target[part]
+            target.pop(parts[-1], None)
+        return mutate
+
+    def _set(path: str, value: Any):
+        def mutate(pkg: Dict[str, Any]) -> None:
+            parts = path.split(".")
+            target = pkg
+            for part in parts[:-1]:
+                target = target[part]
+            target[parts[-1]] = value
+        return mutate
+
+    cases = [
+        ("缺 counts", _drop("counts")),
+        ("缺 stats", _drop("stats")),
+        ("缺 counts.total", _drop("counts.total")),
+        ("缺 counts.by_platform", _drop("counts.by_platform")),
+        ("缺 stats.totals", _drop("stats.totals")),
+        ("缺 meta.filtering", _drop("meta.filtering")),
+        ("缺 samples.hot_keywords", _drop("samples.hot_keywords")),
+        ("counts.total 类型不对", _set("counts.total", "14")),
+        ("stats.totals.items 类型不对", _set("stats.totals.items", "14")),
+        ("meta.stats_fingerprint 缺前缀", _set("meta.stats_fingerprint", "deadbeef")),
+        ("report.window 缺 label", _drop("report.window.label")),
+        ("schema_version 不匹配", _set("schema_version", "public-sentiment-data@v2")),
+    ]
+    for name, mutate in cases:
+        broken = copy.deepcopy(package)
+        mutate(broken)
+        try:
+            validate_report_package(broken)
+            check(f"schema 校验拒绝：{name}", False, "未抛错")
+        except ReportPackageInvalid as exc:
+            check(f"schema 校验拒绝：{name}", exc.code == REPORT_PACKAGE_INVALID,
+                  f"{exc.code}: {exc}")
+
+    try:
+        validate_report_package([])
+        check("schema 校验拒绝非 dict 数据包", False, "未抛错")
+    except ReportPackageInvalid as exc:
+        check("schema 校验拒绝非 dict 数据包", exc.code == REPORT_PACKAGE_INVALID, str(exc))
+    check("错误码常量为 REPORT_PACKAGE_INVALID", REPORT_PACKAGE_INVALID == "REPORT_PACKAGE_INVALID")
+    check("异常问题列表可读（含字段路径）",
+          any("counts" in str(item) for item in ReportPackageInvalid(["counts：缺失"]).problems))
+
+
+def test_split_equivalence(media_db: str) -> None:
+    section("9) 拆分后关键统计值不变（counts / totals / trend / samples）")
+    with tempfile.TemporaryDirectory(prefix="rd_split_") as tmp_dir:
+        package = build_report_package(
+            media_db, WINDOW_START, WINDOW_END, KEYWORDS, DEFAULT_PLATFORMS, None,
+            app_db_path=os.path.join(tmp_dir, "app.db"), report_date=WINDOW_END,
+        )
+    counts = package["counts"]
+    check("counts 关键值（8 内容 / 6 评论 / 14 合计）",
+          (counts["content"], counts["comments"], counts["total"]) == (8, 6, 14),
+          json.dumps(counts, ensure_ascii=False)[:160])
+    expected_by_platform = [
+        {"platform": "xhs", "content": 2, "comments": 2},
+        {"platform": "dy", "content": 1, "comments": 1},
+        {"platform": "ks", "content": 1, "comments": 0},
+        {"platform": "bili", "content": 1, "comments": 0},
+        {"platform": "wb", "content": 1, "comments": 1},
+        {"platform": "tieba", "content": 1, "comments": 1},
+        {"platform": "zhihu", "content": 1, "comments": 1},
+    ]
+    check("counts.by_platform 与拆分前一致", counts["by_platform"] == expected_by_platform,
+          json.dumps(counts["by_platform"], ensure_ascii=False))
+    totals = package["stats"]["totals"]
+    check("stats.totals 关键值（14/8/6，7 平台）",
+          (totals["items"], totals["content"], totals["comments"], totals["platforms"]) == (14, 8, 6, 7),
+          json.dumps(totals, ensure_ascii=False)[:160])
+    trend = package["stats"]["trend"]
+    check("stats.trend 天数 = 7（窗口 11-03 ~ 11-09）", len(trend["days"]) == 7, str(len(trend["days"])))
+    check("stats.report.period 覆写为报告窗口",
+          package["stats"]["report"]["period"] == {"start": WINDOW_START, "end": WINDOW_END,
+                                                   "label": "2026-11-03 ~ 2026-11-09"},
+          json.dumps(package["stats"]["report"]["period"], ensure_ascii=False))
+    check("平台排名覆盖 7 平台", len(package["stats"]["platform_ranking"]) == 7,
+          str(len(package["stats"]["platform_ranking"])))
+    check("无 analyzer 时情感全部 neutral 兜底",
+          package["stats"]["sentiment"]["overall"]["neutral"]["count"] == 14
+          and package["meta"]["sentiment"]["fallback_neutral_items"] == 14,
+          json.dumps(package["stats"]["sentiment"]["overall"], ensure_ascii=False))
+    check("samples 五类齐全且条数有界",
+          set(package["samples"]) == {"negative", "negative_comments", "positive",
+                                      "top_comments", "hot_keywords"}
+          and len(package["samples"]["top_comments"]) <= 20)
+    check("contents 摘要 = 8 条（未截断）",
+          len(package["contents"]) == 8
+          and package["meta"]["filtering"]["truncated"]["contents"] == 0,
+          f"{len(package['contents'])}")
+    check("数据包仍可 JSON 序列化", isinstance(json.dumps(package, ensure_ascii=False), str))
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 def main() -> int:
@@ -578,6 +759,9 @@ def main() -> int:
         test_package_and_sentiment(media_db, app_db)
         test_empty_and_edge(media_db)
         test_poc_modules()
+        test_facade_surface()
+        test_package_schema_guard(media_db)
+        test_split_equivalence(media_db)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
     print("\n" + "=" * 80)

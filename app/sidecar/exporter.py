@@ -9,7 +9,12 @@ exporter.py — MediaCrawler SQLite → 多 sheet Excel 导出器（M1 采集闭
     preview_run(db_path, keywords, started_ts, limit=20) -> dict
 
 行为约定（与契约逐条对应）：
-  1. 表 → sheet 顺序固定（见 SHEETS），表不存在时跳过该 sheet，不报错；
+  1. 表 → sheet 顺序固定，由**声明式规格表** `export_specs.SHEET_SPECS` 决定（旧 `SHEETS`
+     是其 dict 视图）；表不存在时跳过该 sheet，不报错；每张表的列顺序/输出列名也在规格里，
+     导出前做「规格列 vs SQLite 实际列」自检：结构列（内容 ID / 评论父 ID）缺失或严格模式
+     （`strict_schema=True`）下列不一致 → 抛 `EXPORT_SCHEMA_MISMATCH`（含列名），
+     不再静默导出空列；默认模式为旧库兼容（展示列缺失跳过、未声明列追加并记录在返回的
+     `schema` 报告里）；
   2. 过滤（2026-11-09 修复：UI saved=100 而 Excel 只有 1 条）：
        - 内容表：`source_keyword ∈ keywords` 且 **`last_modify_ts >= started_ts`**；
        - 评论表：父内容 ID 集合（同关键词 + **同一 last_modify 口径**）内，
@@ -18,6 +23,9 @@ exporter.py — MediaCrawler SQLite → 多 sheet Excel 导出器（M1 采集闭
        - 原因：`add_ts` 是**首次入库时间**，重复采集不会变化；`last_modify_ts` 是
          **本次运行最后写入时间**，才能反映“本次新增+更新”的数据量（与 UI saved 对齐）。
   3. 列规则：
+       - **列顺序以规格表为准**（`export_specs.SHEET_SPECS`）；当前 MediaCrawler ORM 的列顺序
+         与规格一致，导出结果与改造前**逐字节相同**（见 `test_exporter.py` 的等价断言）；
+         旧库列顺序若与 ORM 不同，按规格顺序输出（列集合、取值规则不变）；
        - `creator_hash` 列改名为 `user_id`（raw ID，不脱敏；兼容旧库只有 `user_id` 的情况）；
        - 时间字段统一格式化为 `YYYY-MM-DD HH:MM:SS`（兼容秒/毫秒时间戳、字符串、Excel 序列号）；
        - 所有 ID 列按文本写入（number_format='@'，避免 Excel 科学计数法丢位）；
@@ -50,6 +58,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -66,26 +75,23 @@ except ImportError as exc:  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
-# 固定映射（顺序即 Excel sheet 顺序，契约 §3）
+# 列规格（P1-2：声明式）—— sheet 顺序 / 列顺序 / 平台清单都来自 export_specs
 # ---------------------------------------------------------------------------
 # kind=content：内容表，按 source_keyword + last_modify_ts 过滤，id_col 为内容 ID 列；
 # kind=comment：评论表，按父内容 ID 集合 + last_modify_ts 过滤，parent_col 为父内容 ID 列。
-SHEETS: List[Dict[str, str]] = [
-    {"name": "小红书", "table": "xhs_note", "kind": "content", "id_col": "note_id", "platform": "xhs"},
-    {"name": "小红书评论", "table": "xhs_note_comment", "kind": "comment", "parent_col": "note_id", "platform": "xhs"},
-    {"name": "抖音", "table": "douyin_aweme", "kind": "content", "id_col": "aweme_id", "platform": "dy"},
-    {"name": "抖音评论", "table": "douyin_aweme_comment", "kind": "comment", "parent_col": "aweme_id", "platform": "dy"},
-    {"name": "快手", "table": "kuaishou_video", "kind": "content", "id_col": "video_id", "platform": "ks"},
-    {"name": "快手评论", "table": "kuaishou_video_comment", "kind": "comment", "parent_col": "video_id", "platform": "ks"},
-    {"name": "B站", "table": "bilibili_video", "kind": "content", "id_col": "video_id", "platform": "bili"},
-    {"name": "B站评论", "table": "bilibili_video_comment", "kind": "comment", "parent_col": "video_id", "platform": "bili"},
-    {"name": "微博", "table": "weibo_note", "kind": "content", "id_col": "note_id", "platform": "wb"},
-    {"name": "微博评论", "table": "weibo_note_comment", "kind": "comment", "parent_col": "note_id", "platform": "wb"},
-    {"name": "贴吧", "table": "tieba_note", "kind": "content", "id_col": "note_id", "platform": "tieba"},
-    {"name": "贴吧评论", "table": "tieba_comment", "kind": "comment", "parent_col": "note_id", "platform": "tieba"},
-    {"name": "知乎", "table": "zhihu_content", "kind": "content", "id_col": "content_id", "platform": "zhihu"},
-    {"name": "知乎评论", "table": "zhihu_comment", "kind": "comment", "parent_col": "content_id", "platform": "zhihu"},
-]
+# `SHEETS` 是 `SHEET_SPECS` 的 dict 视图（旧结构兼容）；新增平台只改 `export_specs`。
+from export_specs import (  # noqa: E402  (紧跟常量区，保持模块结构清晰)
+    COMPUTED_KEYS,
+    FILTERED_REASON_COLUMN,
+    OVERVIEW_SHEET as _OVERVIEW_SHEET,
+    PLATFORM_SHEETS,
+    SENTIMENT_COLUMN,
+    SENTIMENT_REASON_COLUMN,
+    SHEETS,
+    SHEET_SPECS,
+    Col,
+    SheetSpec,
+)
 
 # 需要统一格式化的时间字段（契约 §3）
 TIME_FIELDS = {
@@ -99,7 +105,6 @@ TIME_FIELDS = {
     "last_update_time",
 }
 
-_OVERVIEW_SHEET = "概览"
 _EXCEL_SERIAL_MIN = 20000   # 1954 年之后
 _EXCEL_SERIAL_MAX = 80000   # 2119 年之前
 _MAX_CELL_TEXT = 32000      # Excel 单元格上限 32767，留余量
@@ -419,14 +424,11 @@ FILTER_RULE_DESCRIPTION = "last_modify_ts >= 采集开始时间（毫秒归一�
 #         - 未命中 → filtered_reason = "off_brand"（疑似泛内容）
 #       **只标记、不删除行**，报告/分析阶段再按 off_brand 排除。
 #       评论表的 filtered_reason 按父内容继承（父内容 off_brand → 评论也 off_brand）。
-FILTERED_REASON_COLUMN = "filtered_reason"
 OFF_BRAND = "off_brand"
-_COMPUTED_REASON_KEY = "__computed_filtered_reason__"
+_COMPUTED_REASON_KEY = COMPUTED_KEYS[FILTERED_REASON_COLUMN]
 # 情感判定列（2026-11-09 新增；值来自 app.db sentiment_cache，供报告/Excel 共用）
-SENTIMENT_COLUMN = "sentiment"
-SENTIMENT_REASON_COLUMN = "sentiment_reason"
-_SENTIMENT_CN_KEY = "__sentiment_cn__"
-_SENTIMENT_REASON_KEY = "__sentiment_reason__"
+_SENTIMENT_CN_KEY = COMPUTED_KEYS[SENTIMENT_COLUMN]
+_SENTIMENT_REASON_KEY = COMPUTED_KEYS[SENTIMENT_REASON_COLUMN]
 _SENTIMENT_CN = {"positive": "正面", "neutral": "中性", "negative": "负面"}
 _SENTIMENT_ALIASES = {
     "positive": "positive", "pos": "positive", "正面": "positive", "正向": "positive", "积极": "positive",
@@ -489,22 +491,122 @@ def _annotate_reason(row: Dict[str, Any], reason: str, has_db_column: bool) -> s
     return reason
 
 
-def _pairs_with_reason(db_columns: Sequence[str]) -> Tuple[List[Tuple[str, str]], bool]:
-    """
-    输出列 = 数据库列（creator_hash→user_id）+ filtered_reason + sentiment + sentiment_reason。
+# ---------------------------------------------------------------------------
+# 导出前自检：规格列 vs SQLite 实际列（P1-2）
+# ---------------------------------------------------------------------------
+EXPORT_SCHEMA_MISMATCH = "EXPORT_SCHEMA_MISMATCH"
 
-    `filtered_reason` 若源库已有则沿用，避免重复；`sentiment/sentiment_reason` 两列固定追加在最后
-    （2026-11-09 新增，值来自 app.db 的 sentiment_cache）。
+
+class ExportSchemaMismatch(ValueError):
     """
-    pairs = output_columns(db_columns)
-    has_db_column = FILTERED_REASON_COLUMN in [pair[0] for pair in pairs]
-    if not has_db_column:
-        pairs = pairs + [(FILTERED_REASON_COLUMN, _COMPUTED_REASON_KEY)]
-    pairs = pairs + [
-        (SENTIMENT_COLUMN, _SENTIMENT_CN_KEY),
-        (SENTIMENT_REASON_COLUMN, _SENTIMENT_REASON_KEY),
-    ]
-    return pairs, has_db_column
+    规格表声明的列与 SQLite 实际列不一致 → 拒绝导出（不再静默导出空列）。
+
+    - `missing`：规格声明、DB 里没有的列（旧库常见，展示列可容忍并记录）；
+    - `missing_required`：其中结构列（内容 ID / 评论父 ID）缺失 → 无法正确导出，直接抛错；
+    - `extra`：DB 有、规格没声明的列（上游 ORM 新增字段时出现，严格模式抛错）。
+    """
+
+    code = EXPORT_SCHEMA_MISMATCH
+
+    def __init__(self, sheet: str, *, missing: Sequence[str] = (), missing_required: Sequence[str] = (),
+                 extra: Sequence[str] = ()) -> None:
+        self.sheet = str(sheet)
+        self.missing = tuple(str(item) for item in missing)
+        self.missing_required = tuple(str(item) for item in missing_required)
+        self.extra = tuple(str(item) for item in extra)
+        parts = [f"{EXPORT_SCHEMA_MISMATCH}: sheet「{self.sheet}」列规格与数据库不一致"]
+        if self.missing:
+            parts.append(f"数据库缺少规格列={list(self.missing)}")
+        if self.missing_required:
+            parts.append(f"缺少结构必需列={list(self.missing_required)}")
+        if self.extra:
+            parts.append(f"数据库存在未声明列={list(self.extra)}")
+        super().__init__("；".join(parts))
+
+
+@dataclass(frozen=True)
+class SheetColumns:
+    """一张 sheet 的列解析结果（规格 → 实际输出列）。"""
+
+    pairs: Tuple[Tuple[str, str], ...]
+    missing: Tuple[str, ...] = ()
+    missing_required: Tuple[str, ...] = ()
+    extra: Tuple[str, ...] = ()
+    has_reason_db_column: bool = False
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "missing": list(self.missing),
+            "missing_required": list(self.missing_required),
+            "extra": list(self.extra),
+            "has_reason_db_column": self.has_reason_db_column,
+            "columns": [label for label, _ in self.pairs],
+        }
+
+
+def resolve_sheet_columns(spec: SheetSpec, db_columns: Sequence[str], *, strict: bool = False) -> SheetColumns:
+    """
+    把 `SheetSpec.columns` 解析成实际输出列 (输出列名, 取值来源)。
+
+    取值来源可能是数据库列名（含旧库兼容候选命中的列），也可能是计算列的内部键。
+    缺列 / 未声明列的处理：
+      - 结构列（`Col.required`）缺失 → 抛 `ExportSchemaMismatch`（EXPORT_SCHEMA_MISMATCH，含列名）；
+      - `strict=True` 时任何缺列 / 未声明列都抛错（CI / 测试用，守护 ORM 漂移）；
+      - 默认模式按旧库兼容：展示列缺失跳过、未声明列追加在计算列之前，并记录在返回值里。
+    """
+    db_order = list(db_columns)
+    db_set = set(db_order)
+    used: set = set()
+    pairs: List[Tuple[str, str]] = []
+    derived_pairs: List[Tuple[str, str]] = []
+    missing: List[str] = []
+    missing_required: List[str] = []
+    has_reason_db_column = FILTERED_REASON_COLUMN in db_set
+
+    for column in spec.columns:
+        if column.is_computed:
+            if column.label == FILTERED_REASON_COLUMN and has_reason_db_column:
+                # 源库自带 filtered_reason：沿用库里的值（不重复追加计算列）
+                used.add(FILTERED_REASON_COLUMN)
+                derived_pairs.append((column.label, FILTERED_REASON_COLUMN))
+            else:
+                derived_pairs.append((column.label, COMPUTED_KEYS[column.label]))
+            continue
+        source = next((field for field in column.candidate_fields() if field in db_set), "")
+        if not source:
+            missing.append(column.label)
+            if column.required:
+                missing_required.append(column.label)
+            continue
+        if source in used:  # 旧库同时有 creator_hash 与 user_id：只输出一列
+            continue
+        used.add(source)
+        pairs.append((column.label, source))
+
+    extra = [name for name in db_order if name not in used]
+    if missing_required or (strict and (missing or extra)):
+        raise ExportSchemaMismatch(
+            spec.name, missing=missing, missing_required=missing_required, extra=extra,
+        )
+    return SheetColumns(
+        pairs=tuple(pairs + [(name, name) for name in extra] + derived_pairs),
+        missing=tuple(missing),
+        missing_required=tuple(missing_required),
+        extra=tuple(extra),
+        has_reason_db_column=has_reason_db_column,
+    )
+
+
+def _pairs_with_reason(spec: SheetSpec, db_columns: Sequence[str], *, strict: bool = False
+                       ) -> Tuple[List[Tuple[str, str]], bool, SheetColumns]:
+    """
+    输出列 = 规格表列（creator_hash→user_id）+ filtered_reason + sentiment + sentiment_reason。
+
+    现在由 `SHEET_SPECS` 驱动（见 `export_specs`）：规格列顺序即 Excel 列顺序，
+    `filtered_reason` 若源库已有则沿用库值，否则用计算值；情感两列固定追加在最后。
+    """
+    resolved = resolve_sheet_columns(spec, db_columns, strict=strict)
+    return list(resolved.pairs), resolved.has_reason_db_column, resolved
 
 
 def _sentiment_cn(value: Any) -> str:
@@ -679,16 +781,20 @@ def _convert_preview_row(row: Dict[str, Any], pairs: Sequence[Tuple[str, str]]) 
 # 数据收集（导出与预览共用）
 # ---------------------------------------------------------------------------
 def _collect(db_path: str, keywords: Sequence[str], started_ts: Any,
-             app_db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+             app_db_path: Optional[str] = None, *, strict_schema: bool = False) -> List[Dict[str, Any]]:
     """
-    按契约顺序读取 14 张表并过滤，返回：
-      [{"sheet": 名称, "table": 表名, "kind": ..., "pairs": [(输出列, db列)],
-        "rows": [db row...]}]
+    按 `SHEET_SPECS` 顺序读取 14 张表并过滤，返回：
+      [{"sheet": 名称, "table": 表名, "spec": SheetSpec, "kind": ...,
+        "pairs": [(输出列, 取值来源)], "rows": [db row...],
+        "has_reason_db_column": bool, "schema": SheetColumns}]
     表不存在 → 从结果中跳过。
 
     过滤口径：`last_modify_ts >= started_ts`（毫秒归一；缺失/0 回退 `add_ts`），
     内容表另加 `source_keyword ∈ keywords`；评论表的父内容集合用同一口径得到。
     每个数据行会附加 filtered_reason 与 sentiment/sentiment_reason 注解（来自 app.db 情感缓存）。
+
+    列来自规格表（`export_specs.SHEET_SPECS`）；导出前对每张表做「规格列 vs DB 列」自检，
+    结构列缺失或严格模式下任何不一致 → 抛 `ExportSchemaMismatch`。
     """
     keywords = normalize_keywords(keywords)
     started_ms = _to_epoch_ms(started_ts)
@@ -699,16 +805,18 @@ def _collect(db_path: str, keywords: Sequence[str], started_ts: Any,
 
     conn = open_readonly(db_path)
     try:
-        for spec in SHEETS:
-            table = spec["table"]
+        for spec in SHEET_SPECS:
+            if spec.kind == "overview":
+                continue
+            table = spec.table
             if not _table_exists(conn, table):
                 continue
             db_columns = _table_columns(conn, table)
             rows = _read_rows(conn, table)
-            pairs, has_reason_db_column = _pairs_with_reason(db_columns)
-            if spec["kind"] == "content":
+            pairs, has_reason_db_column, schema = _pairs_with_reason(spec, db_columns, strict=strict_schema)
+            if spec.kind == "content":
                 filtered = _filter_content_rows(rows, keywords, started_ms)
-                id_col = spec["id_col"]
+                id_col = spec.id_col
                 id_to_reason: Dict[str, str] = {}
                 parent_set = set()
                 for row in filtered:
@@ -717,32 +825,46 @@ def _collect(db_path: str, keywords: Sequence[str], started_ts: Any,
                     if row.get(id_col) is not None:
                         parent_set.add(row_id)
                     id_to_reason[row_id] = reason
-                    _annotate_sentiment(row, platform_code=spec["platform"], kind="content",
+                    _annotate_sentiment(row, platform_code=spec.platform, kind="content",
                                         item_id=row.get(id_col), cache=cache)
-                content_ids[spec["platform"]] = parent_set
-                parent_reasons[spec["platform"]] = id_to_reason
+                content_ids[spec.platform] = parent_set
+                parent_reasons[spec.platform] = id_to_reason
             else:
-                parent_set = content_ids.get(spec["platform"], set())
-                filtered = _filter_comment_rows(rows, spec["parent_col"], parent_set, started_ms)
-                reasons = parent_reasons.get(spec["platform"], {})
+                parent_set = content_ids.get(spec.platform, set())
+                filtered = _filter_comment_rows(rows, spec.parent_col, parent_set, started_ms)
+                reasons = parent_reasons.get(spec.platform, {})
                 for row in filtered:
-                    parent_id = _to_text(row.get(spec["parent_col"]))
+                    parent_id = _to_text(row.get(spec.parent_col))
                     _annotate_reason(row, reasons.get(parent_id, ""), has_reason_db_column)
-                    _annotate_sentiment(row, platform_code=spec["platform"], kind="comment",
+                    _annotate_sentiment(row, platform_code=spec.platform, kind="comment",
                                         item_id=row.get("comment_id"), cache=cache)
             collected.append(
                 {
-                    "sheet": spec["name"],
+                    "sheet": spec.name,
                     "table": table,
-                    "kind": spec["kind"],
+                    "spec": spec,
+                    "kind": spec.kind,
                     "pairs": pairs,
                     "rows": filtered,
                     "has_reason_db_column": has_reason_db_column,
+                    "schema": schema,
                 }
             )
     finally:
         conn.close()
     return collected
+
+
+def _schema_report(collected: Sequence[Dict[str, Any]], *, strict_schema: bool) -> Dict[str, Any]:
+    """导出/预览返回的自检报告：每张表的缺列 / 未声明列（便于排查上游 ORM 漂移）。"""
+    sheets = {}
+    has_drift = False
+    for item in collected:
+        schema: SheetColumns = item["schema"]
+        if schema.missing or schema.extra:
+            has_drift = True
+        sheets[item["sheet"]] = schema.as_dict()
+    return {"strict": bool(strict_schema), "ok": not has_drift, "sheets": sheets}
 
 
 def _total_rows(collected: Sequence[Dict[str, Any]]) -> int:
@@ -885,7 +1007,8 @@ def _write_data_sheet(wb: Workbook, name: str, pairs: Sequence[Tuple[str, str]],
 
 
 def export_run_excel(db_path: str, out_dir: str, run_id: str, keywords: Any,
-                     started_ts: Any, app_db_path: Optional[str] = None) -> Dict[str, Any]:
+                     started_ts: Any, app_db_path: Optional[str] = None, *,
+                     strict_schema: bool = False) -> Dict[str, Any]:
     """
     导出一次采集结果为多 sheet Excel。
 
@@ -897,10 +1020,13 @@ def export_run_excel(db_path: str, out_dir: str, run_id: str, keywords: Any,
       started_ts 采集开始时间（秒级时间戳；兼容毫秒/字符串），
                  用于 `last_modify_ts >= started_ts`（缺失/0 回退 add_ts）过滤
                  “本次运行新增+更新”的数据；
-      app_db_path 可选：情感缓存 app.db 路径（默认由 db_path 推导 `<data-dir>/app.db`）。
+      app_db_path 可选：情感缓存 app.db 路径（默认由 db_path 推导 `<data-dir>/app.db`）；
+      strict_schema 可选：严格列自检（CI/测试用）。默认按旧库兼容处理展示列缺失，
+                 结构列（内容 ID / 评论父 ID）缺失时始终抛 `EXPORT_SCHEMA_MISMATCH`。
 
     返回：
-      {"file_path": str, "sheets": [{"name": str, "rows": int}], "total_rows": int}
+      {"file_path": str, "sheets": [{"name": str, "rows": int}], "total_rows": int,
+       "schema": {"strict": bool, "ok": bool, "sheets": {sheet: {...}}}}
 
     说明：每个数据 sheet 末尾会追加 `filtered_reason` 相关性标记列，以及
     `sentiment`（正面/中性/负面）/`sentiment_reason` 情感列（来自 app.db sentiment_cache，无缓存留空）；
@@ -909,7 +1035,8 @@ def export_run_excel(db_path: str, out_dir: str, run_id: str, keywords: Any,
     keyword_list = normalize_keywords(keywords)
     started_dt = _to_datetime(started_ts) if started_ts not in (None, "", 0) else None
     resolved_app_db = _resolve_report_app_db(db_path, app_db_path)
-    collected = _collect(db_path, keyword_list, started_ts, app_db_path=resolved_app_db)
+    collected = _collect(db_path, keyword_list, started_ts, app_db_path=resolved_app_db,
+                         strict_schema=strict_schema)
     total_rows = _total_rows(collected)
     relevance = _relevance_totals(collected)
     sentiment_counts = _sentiment_counts(collected)
@@ -936,11 +1063,16 @@ def export_run_excel(db_path: str, out_dir: str, run_id: str, keywords: Any,
 
     file_path = _build_output_path(out_dir, keyword_list)
     wb.save(file_path)
-    return {"file_path": file_path, "sheets": sheets_result, "total_rows": total_rows}
+    return {
+        "file_path": file_path,
+        "sheets": sheets_result,
+        "total_rows": total_rows,
+        "schema": _schema_report(collected, strict_schema=strict_schema),
+    }
 
 
 def preview_run(db_path: str, keywords: Any, started_ts: Any, limit: int = 20,
-                app_db_path: Optional[str] = None) -> Dict[str, Any]:
+                app_db_path: Optional[str] = None, *, strict_schema: bool = False) -> Dict[str, Any]:
     """
     预览一次采集结果（供 sidecar `GET /api/runs/{run_id}/data` 使用）。
 
@@ -960,7 +1092,8 @@ def preview_run(db_path: str, keywords: Any, started_ts: Any, limit: int = 20,
     limit_int = max(0, min(limit_int, 5000))
 
     resolved_app_db = _resolve_report_app_db(db_path, app_db_path)
-    collected = _collect(db_path, normalize_keywords(keywords), started_ts, app_db_path=resolved_app_db)
+    collected = _collect(db_path, normalize_keywords(keywords), started_ts,
+                         app_db_path=resolved_app_db, strict_schema=strict_schema)
     sheets_result: List[Dict[str, Any]] = []
     for item in collected:
         rows = item["rows"][:limit_int]
@@ -983,12 +1116,20 @@ export_run = export_run_excel
 
 __all__ = [
     "SHEETS",
+    "SHEET_SPECS",
+    "PLATFORM_SHEETS",
+    "SheetSpec",
+    "Col",
+    "SheetColumns",
     "TIME_FIELDS",
     "FILTERED_REASON_COLUMN",
     "SENTIMENT_COLUMN",
     "SENTIMENT_REASON_COLUMN",
     "OFF_BRAND",
     "RELEVANCE_RULE_DESCRIPTION",
+    "EXPORT_SCHEMA_MISMATCH",
+    "ExportSchemaMismatch",
+    "resolve_sheet_columns",
     "export_run_excel",
     "preview_run",
     "preview",
