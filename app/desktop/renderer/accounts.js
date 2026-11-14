@@ -524,9 +524,6 @@
     viewEl.querySelectorAll('[data-delete]').forEach(function (btn) {
       btn.addEventListener('click', function () { deleteAccount(btn.getAttribute('data-delete')); });
     });
-    viewEl.querySelectorAll('[data-adopt]').forEach(function (btn) {
-      btn.addEventListener('click', function () { adoptAccount(btn.getAttribute('data-adopt')); });
-    });
   }
 
   /* ------------------------------------------------------------ 测试连接 */
@@ -792,14 +789,6 @@
           FS.toast({ tone: 'error', title: '删除账号失败', text: apiErrNote(err) });
         });
       }
-    });
-  }
-  function adoptAccount(accountId) {
-    FS.api.pool.adopt(accountId).then(function () {
-      FS.toast({ tone: 'success', title: '旧登录目录迁移完成', text: '登录态已迁移到该账号的新 profile 目录。' });
-      loadAccounts(true);
-    }).catch(function (err) {
-      FS.toast({ tone: 'error', title: '迁移旧目录失败', text: apiErrNote(err, '请先停止该平台的采集/登录后重试') });
     });
   }
   function clearLegacyAccount(platform) {
