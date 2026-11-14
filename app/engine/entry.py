@@ -9,6 +9,10 @@
 
 结构化事件逐行输出：##EVENT##{"type":"...", ...}
 最后一行必为 engine.finished（成功/失败都会发；失败时进程退出码仍为 0，由 sidecar 以事件为准）。
+例外：上游契约探测失败（ENGINE_INCOMPATIBLE）时先发 engine.finished ok:false，再以退出码 2 结束。
+
+上游契约探测：适配器依赖的 MediaCrawler 符号声明在 app/engine/adapters/，启动时（run_mode 之前）
+统一探测；缺失即明确失败，不带着会打空枪的补丁继续跑。
 
 环境变量：
     MC_ROOT         覆盖 MediaCrawler 根目录（默认 <project>/MediaCrawler）
@@ -359,6 +363,22 @@ def main(argv=None) -> int:
     _install_signal_handlers()
     emitter.started()
 
+    # P0-1 上游契约探测：适配器依赖的 MediaCrawler 符号缺失时明确失败（退出码 2），
+    # 绝不带着「打空枪也不报错」的补丁继续跑。
+    try:
+        patches.check_upstream_contract(mc_root, platform=args.platform, mode=args.mode)
+    except patches.EngineIncompatible as exc:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        emit_failed = False
+        print(f"[engine] {exc.summary}", flush=True)
+        try:
+            emitter.progress("boot", 0, 0, f"[error] {exc.summary}")
+            emitter.finished(ok=False, elapsed_ms=elapsed_ms, db_path=None, message=str(exc))
+        except Exception:  # noqa: BLE001 - 事件出口异常只影响退出码
+            emit_failed = True
+            traceback.print_exc()
+        return 2 if not emit_failed else 1
+
     ok = False
     message = ""
     emit_failed = False
@@ -383,6 +403,11 @@ def main(argv=None) -> int:
     except patches.QrLoadFailed as exc:
         ok = False
         message = str(exc) or patches.QR_FAIL_MESSAGE
+    except patches.EnginePatchError as exc:
+        # 必需补丁（登录 / 二维码 / 数据解析）失败：出口层统一转成 engine.finished ok:false
+        ok = False
+        message = str(exc)
+        traceback.print_exc()
     except Exception as exc:  # noqa: BLE001
         ok = False
         message = f"{type(exc).__name__}: {exc}"

@@ -34,6 +34,7 @@ if str(ENGINE_DIR) not in sys.path:
 
 import entry  # noqa: E402
 import patches  # noqa: E402
+import adapters  # noqa: E402  （适配器包：上游契约探测 / 显式错误 / 补丁 warning）
 
 CHECKS = []
 _FAILED = []
@@ -1667,6 +1668,308 @@ def test_engine_finished_guard() -> None:
 
 
 # --------------------------------------------------------------------------------------
+# 9. P0-1：适配器化 + 上游契约探测 + 补丁错误显式化
+# --------------------------------------------------------------------------------------
+def test_upstream_contract_detection() -> None:
+    """契约探测：缺符号 -> EngineIncompatible(ENGINE_INCOMPATIBLE)；契约完整 -> 不报错。"""
+    import os
+
+    mc_root = patches.resolve_mc_root()
+
+    # 2.1 真实 MediaCrawler：契约完整
+    missing = adapters.detect_upstream_contract(mc_root)
+    check(
+        "契约探测: 真实 MediaCrawler 目录无缺失符号",
+        missing == [],
+        str([item.describe() for item in missing][:5]),
+    )
+    raised = False
+    try:
+        patches.check_upstream_contract(mc_root, platform="xhs", mode="login")
+    except patches.EngineIncompatible:
+        raised = True
+    check("契约探测: 契约完整时 check_upstream_contract 不抛 EngineIncompatible", raised is False)
+
+    # 1. fake 上游：缺方法 + 缺模块 -> 缺失项被识别
+    from adapters.base import EngineIncompatible, MissingSymbol, UpstreamSymbol
+
+    fake_root = Path(tempfile.mkdtemp(prefix="mc_engine_fake_upstream_"))
+    package = fake_root / "fake_upstream"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "client.py").write_text(
+        "class FakeClient:\n    async def pong(self):\n        return True\n", encoding="utf-8"
+    )
+    symbols = [
+        UpstreamSymbol("fake", "fake_upstream/client.py", "FakeClient.pong"),
+        UpstreamSymbol("fake", "fake_upstream/client.py", "FakeClient.get_note_by_keyword"),
+        UpstreamSymbol("fake", "fake_upstream/missing_module.py", "Thing.method"),
+    ]
+    fake_missing = adapters.detect_upstream_contract(fake_root, symbols=symbols)
+    check(
+        "契约探测: fake 上游缺失符号被识别（属性缺失 + 模块缺失各 1）",
+        len(fake_missing) == 2 and all(isinstance(item, MissingSymbol) for item in fake_missing),
+        str([item.describe() for item in fake_missing]),
+    )
+    check(
+        "契约探测: 存在的符号不误报（FakeClient.pong 不计入缺失）",
+        all(".pong" not in item.symbol for item in fake_missing),
+    )
+    exc = EngineIncompatible(fake_missing)
+    check(
+        "EngineIncompatible.code == ENGINE_INCOMPATIBLE（门面同一类型）",
+        exc.code == "ENGINE_INCOMPATIBLE" and patches.EngineIncompatible is EngineIncompatible,
+    )
+    check(
+        "EngineIncompatible message 列出缺失符号 + 重装建议",
+        "FakeClient.get_note_by_keyword" in str(exc) and "setup_mediacrawler.ps1" in str(exc),
+        str(exc)[:200],
+    )
+
+    # 1b. 出口层：契约不兼容 -> engine.finished ok:false + 非零退出码
+    original = patches.check_upstream_contract
+    tmp = Path(tempfile.mkdtemp(prefix="mc_engine_incompat_"))
+    previous_mc_root = os.environ.get("MC_ROOT")
+    try:
+        def boom(*_args, **_kwargs):
+            raise patches.EngineIncompatible(fake_missing)
+
+        patches.check_upstream_contract = boom
+        code, events = _capture_engine_events(
+            ["--mode", "test", "--platform", "xhs", "--data-dir", str(tmp)]
+        )
+    finally:
+        patches.check_upstream_contract = original
+        if previous_mc_root is None:
+            os.environ.pop("MC_ROOT", None)
+        else:
+            os.environ["MC_ROOT"] = previous_mc_root
+
+    finished = events[-1] if events else {}
+    check(
+        "出口层: 契约不兼容 -> 最后一个事件 engine.finished ok:false 且带 ENGINE_INCOMPATIBLE",
+        finished.get("type") == "engine.finished"
+        and finished.get("ok") is False
+        and "ENGINE_INCOMPATIBLE" in str(finished.get("message"))
+        and "FakeClient.get_note_by_keyword" in str(finished.get("message")),
+        str(finished)[:200],
+    )
+    check("出口层: 契约不兼容时退出码非零（明确失败）", code == 2, f"exit={code}")
+    check(
+        "出口层: 契约不兼容时先发一条 [error] progress（UI 可见）",
+        any(e.get("type") == "progress" and "[error]" in str(e.get("message")) for e in events),
+        str([e.get("message") for e in events if e.get("type") == "progress"][:2]),
+    )
+
+
+def test_required_patch_errors_are_explicit() -> None:
+    """必需补丁（二维码/登录）失败 -> EnginePatchError + error 事件 + 出口层 ok:false。"""
+    from adapters.base import EnginePatchError
+
+    sink = []
+    emitter = patches.EventEmitter("xhs", "login", sink.append)
+    patches.reset_patch_warning_counts()
+    tmp = Path(tempfile.mkdtemp(prefix="mc_engine_patch_err_"))
+
+    raised = None
+    try:
+        patches.install_qr_capture({}, emitter, tmp, "xhs")  # 缺 mc["utils"]/mc["crawler_util"]
+    except patches.EnginePatchError as exc:
+        raised = exc
+    check(
+        "必需补丁: install_qr_capture 上游钩子缺失 -> EnginePatchError",
+        isinstance(raised, EnginePatchError) and raised.patch_name == "install_qr_capture",
+        str(raised),
+    )
+    error_events = [
+        e for e in sink if e["type"] == "progress" and "[error]" in str(e.get("message"))
+    ]
+    check(
+        "必需补丁: 抛出前已发 error 级别 progress 事件（用户可见）",
+        bool(error_events) and "install_qr_capture" in error_events[-1]["message"],
+        str(error_events[-1] if error_events else None)[:200],
+    )
+    check(
+        "必需补丁: error 事件字段仍是契约 progress 字段",
+        bool(error_events) and set(error_events[0].keys()) == patches.EVENT_FIELDS["progress"],
+        str(sorted(error_events[0].keys()) if error_events else None),
+    )
+
+    original_run_mode = entry.run_mode
+    tmp2 = Path(tempfile.mkdtemp(prefix="mc_engine_patch_exit_"))
+    try:
+        def raise_patch(*_args, **_kwargs):
+            raise patches.EnginePatchError("xhs", "instrument_login_class", "上游缺少 check_login_state")
+
+        entry.run_mode = raise_patch
+        code, events = _capture_engine_events(
+            ["--mode", "login", "--platform", "xhs", "--data-dir", str(tmp2)]
+        )
+    finally:
+        entry.run_mode = original_run_mode
+
+    finished = events[-1] if events else {}
+    check(
+        "出口层: EnginePatchError -> engine.finished ok:false（不是崩溃）",
+        finished.get("type") == "engine.finished" and finished.get("ok") is False,
+        str(finished)[:200],
+    )
+    check(
+        "出口层: message 带补丁名与原因",
+        "instrument_login_class" in str(finished.get("message"))
+        and "check_login_state" in str(finished.get("message")),
+        str(finished.get("message"))[:160],
+    )
+    check("出口层: 补丁失败进程退出码 0（sidecar 以事件为准）", code == 0, f"exit={code}")
+
+
+def test_optional_patch_warning_and_counter() -> None:
+    """可选补丁失败 -> 不抛异常、降级返回 False、发 warning 事件且计数 +1。"""
+    import os
+
+    patches.reset_patch_warning_counts()
+    sink = []
+    emitter = patches.EventEmitter("ks", "crawl", sink.append)
+    before = patches.patch_warning_counts()["total"]
+
+    class FakeClientMissing:
+        """模拟上游改名：没有 search_info_by_keyword_v2。"""
+
+    previous = os.environ.pop("ENGINE_KS_SEARCH_WEB_STYLE", None)
+    try:
+        result = patches.patch_kuaishou_search(FakeClientMissing)
+    finally:
+        if previous is not None:
+            os.environ["ENGINE_KS_SEARCH_WEB_STYLE"] = previous
+
+    counts = patches.patch_warning_counts()
+    warning_events = [
+        e for e in sink if e["type"] == "progress" and "[warning]" in str(e.get("message"))
+    ]
+    check("可选补丁: 上游符号缺失不抛异常（返回 False 降级）", result is False)
+    check(
+        "可选补丁: 发出 warning 级别 progress 事件（不再静默 print）",
+        bool(warning_events) and "patch_kuaishou_search" in warning_events[-1]["message"],
+        str(warning_events[-1] if warning_events else None)[:200],
+    )
+    check(
+        "可选补丁: warning 计数 +1（patch_warning_counts 可见）",
+        counts["total"] == before + 1 and counts["items"].get("ks:patch_kuaishou_search") == 1,
+        str(counts),
+    )
+
+    report = patches.emit_patch_warning("xhs", "unit_probe", "自测用")
+    check(
+        "可选补丁: emit_patch_warning 返回 level/count/event（可直接断言）",
+        report.get("level") == "warning"
+        and report.get("count") == 1  # 同 patch 名的计数从 1 开始
+        and report.get("event") is not None
+        and patches.patch_warning_counts()["total"] == before + 2,
+        str({k: v for k, v in report.items() if k != "event"}),
+    )
+
+
+def test_facade_signature_compat() -> None:
+    """门面兼容：7 个 patch_* 名字/签名不变，返回值类型不变，写属性同步到适配器。"""
+    import inspect
+
+    expected = {
+        "patch_user_hash": ["user_hash_module"],
+        "patch_browser_channel": ["channel"],
+        "patch_login_only": ["crawler", "state"],
+        "patch_login_blocked": ["mc", "platform"],
+        "patch_kuaishou_search": ["client_cls"],
+        "patch_weibo_comment_empty": [],
+        "patch_douyin_login_dialog": ["mc", "emitter"],
+    }
+    missing = [name for name in expected if not callable(getattr(patches, name, None))]
+    check("门面: 7 个 patch_* 函数仍存在且可调用", not missing, str(missing))
+
+    bad_signature = []
+    for name, params in expected.items():
+        fn = getattr(patches, name)
+        if list(inspect.signature(fn).parameters) != params:
+            bad_signature.append(f"{name}{list(inspect.signature(fn).parameters)}")
+    check("门面: 函数签名（参数名/顺序）不变", not bad_signature, str(bad_signature))
+
+    info = patches.patch_browser_channel()
+    check(
+        "门面: patch_browser_channel() 仍返回 dict（channel/patched）",
+        isinstance(info, dict) and "channel" in info and "patched" in info,
+        str(info),
+    )
+    class DummyCrawler:
+        async def search(self):  # pragma: no cover - 只用于签名/返回值兼容检查
+            return None
+
+    check(
+        "门面: 其余 patch 返回契约不变（bool / None）",
+        isinstance(patches.patch_kuaishou_search(object()), bool)
+        and patches.patch_login_only(DummyCrawler(), {}) is None,
+    )
+
+    original = patches.detect_verification
+    fake = lambda page: None  # noqa: E731 - 自测替身
+    try:
+        patches.detect_verification = fake
+        synced = adapters.login.detect_verification is fake
+    finally:
+        patches.detect_verification = original
+    check(
+        "门面: patches.detect_verification = ... 同步到 adapters.login（内部调用生效）",
+        synced,
+    )
+
+
+def test_adapter_registry_complete() -> None:
+    """适配器注册表：7 平台 + browser/login/content 都有非空必需契约。"""
+    registry = adapters.adapter_registry()
+    expected_owners = set(patches.PLATFORMS) | {"browser", "login", "content"}
+    missing_owners = sorted(expected_owners - set(registry))
+    check("适配器注册表: 覆盖 7 平台 + browser/login/content", not missing_owners, str(missing_owners))
+
+    empty = [owner for owner in sorted(expected_owners) if not (registry.get(owner) or {}).get("required")]
+    check("适配器注册表: 每个适配器的必需契约项非空", not empty, str(empty))
+
+    broken = [
+        symbol.describe()
+        for owner in sorted(expected_owners)
+        for symbol in (registry.get(owner) or {}).get("required", [])
+        if not symbol.path or not symbol.symbol or not symbol.module
+    ]
+    check("适配器注册表: 契约项都有 path/module/symbol（可直接定位上游）", not broken, str(broken[:3]))
+
+    per_platform = {
+        platform: len(
+            [
+                symbol
+                for symbol in adapters.iter_contracts(platform=platform, required_only=True)
+                if "all" not in symbol.platforms
+            ]
+        )
+        for platform in patches.PLATFORMS
+    }
+    check(
+        "适配器注册表: 每个平台都有平台专属必需契约（不只是 all）",
+        all(count > 0 for count in per_platform.values()),
+        str(per_platform),
+    )
+
+
+def test_no_silent_except_in_adapters() -> None:
+    """补丁层不再出现「吞掉后什么都不做」：adapters/*.py 不得有 `except ...: pass`。"""
+    import re as _re
+
+    offenders = []
+    for path in sorted((ENGINE_DIR / "adapters").glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for match in _re.finditer(r"except[^\n]*:\s*\n\s+pass\b", text):
+            line = text[: match.start()].count("\n") + 1
+            offenders.append(f"{path.name}:{line}")
+    check("适配器: 无 `except ...: pass`（23 处静默吞异常已全部显式化）", not offenders, str(offenders[:8]))
+
+
+# --------------------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------------------
 def main() -> int:
@@ -1708,6 +2011,12 @@ def main() -> int:
         test_kuaishou_notes_cap,
         test_cli_args,
         test_engine_finished_guard,
+        test_upstream_contract_detection,
+        test_required_patch_errors_are_explicit,
+        test_optional_patch_warning_and_counter,
+        test_facade_signature_compat,
+        test_adapter_registry_complete,
+        test_no_silent_except_in_adapters,
     ]
     for test in tests:
         print(f"\n--- {test.__name__} ---")
