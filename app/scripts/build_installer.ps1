@@ -24,6 +24,14 @@
 .PARAMETER SkipVerify
     只构建，不做静默安装 / 截图验证。
 
+.PARAMETER SkipPrune
+    透传给 build_pack_resources.ps1：staging 不剪裁（保留测试/文档/开发工具/重复 node）。
+    仅用于排查「剪裁后某能力不可用」，正常运行构建不要加。
+
+.PARAMETER Compression
+    NSIS 压缩级别，默认 maximum（LZMA 固态压缩，安装包最小；打包耗时更长）。
+    传 normal 可回到快速构建模式。
+
 .PARAMETER SkipSidecarVerify
     验证时只跑 --no-sidecar 截图，不启动真实 sidecar（更快）。
 
@@ -57,9 +65,15 @@ param(
     [switch]$Clean,
     [switch]$SkipVerify,
     [switch]$SkipSidecarVerify,
+    [switch]$SkipPrune,
     [switch]$KeepInstall,
     [string]$OutputDir = '',
-    [string]$VerifyDir = ''
+    [string]$VerifyDir = '',
+    # NSIS 压缩级别（默认 normal，与历史构建一致）。实测 maximum 对本项目产物体积
+    # 无可见收益（177.8 MB vs 177.8 MB，差 3 字节），只是更慢，所以不做默认；
+    # 需要极限压缩时可显式传 -Compression maximum。
+    [ValidateSet('store', 'normal', 'maximum')]
+    [string]$Compression = 'normal'
 )
 
 Set-StrictMode -Version Latest
@@ -145,6 +159,7 @@ if (-not $SkipResources) {
     Assert-FileExists $ResScript 'build_pack_resources.ps1'
     $psArgs = @('-NoProfile', '-File', $ResScript)
     if ($Clean) { $psArgs += '-Clean' }
+    if ($SkipPrune) { $psArgs += '-SkipPrune' }
     & pwsh @psArgs
     if ($LASTEXITCODE -ne 0) { Fail "build_pack_resources.ps1 失败（exit $LASTEXITCODE）" }
 } else {
@@ -213,7 +228,8 @@ Assert-FileExists $builderCmd 'electron-builder CLI'
 Push-Location -LiteralPath $Desktop
 try {
     # 直接继承控制台输出（不用管道捕获 GUI 进程输出，避免 PowerShell 挂起）
-    $builderArgs = @('--win', 'nsis', '--x64', '--publish', 'never')
+    $builderArgs = @('--win', 'nsis', '--x64', '--publish', 'never', "--config.compression=$Compression")
+    Note ("NSIS 压缩级别：{0}" -f $Compression)
     $defaultOutputDir = [IO.Path]::GetFullPath((Join-Path $Repo 'build\installer\output'))
     if ($OutputDir -ne $defaultOutputDir) {
         # 自定义输出目录：可重复性构建时不覆盖已交付安装包
