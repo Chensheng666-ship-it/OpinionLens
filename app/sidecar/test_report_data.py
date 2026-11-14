@@ -161,7 +161,7 @@ def build_fixture_media_db(path: str) -> None:
             dict(common, note_id="x1", title="示例科技新品发布", desc="正文内容 正面",
                  time="2026-11-05 10:00:00", note_url="https://xhs/1", source_keyword="示例科技",
                  liked_count=10, comment_count=2, collected_count=3, share_count=4),
-            dict(common, note_id="x2", title="某某示例科技获奖", desc="获奖新闻",
+            dict(common, note_id="x2", title="示例科技获奖", desc="获奖新闻",
                  time="2026-11-03 00:00:00", note_url="https://xhs/2", source_keyword="示例",
                  liked_count=5),
             dict(common, note_id="x3", title="示例科技 窗口外", desc="窗口外内容",

@@ -748,7 +748,7 @@
       {
         title: '',
         text: '# {kw} # 今天路过看到在招人，顺便拍了一张，有在找工作的朋友可以关注一下。',
-        author: '本地身边事', likes: 88, platformComments: 34, collects: 5, shares: 12, plays: null, commentTotal: 14,
+        author: '本地资讯', likes: 88, platformComments: 34, collects: 5, shares: 12, plays: null, commentTotal: 14,
         comments: [
           { author: '求职中', text: '请问招什么岗位？', likes: 4 },
           { author: '本地资讯君', text: '转发给需要的朋友了。', likes: 2 }
@@ -1060,7 +1060,7 @@
         { ts: iso(t0 + 60 * 1000), level: 'ok', text: '===== [小红书] 结束：done =====' },
         { ts: iso(t0 + 61 * 1000), level: 'info', text: '===== [抖音] 开始采集 platform=dy =====' },
         { ts: iso(t0 + 63 * 1000), level: 'info', text: '2026-11-11 10:01:03 MediaCrawler INFO (core.py:212) - [DouyinCrawler.search] Current search keyword: 示例科技' },
-        { ts: iso(t0 + 66 * 1000), level: 'info', text: '2026-11-11 10:01:06 MediaCrawler INFO (core.py:560) - [store.douyin.update_douyin_aweme] douyin aweme: {\'aweme_id\': \'d1\', \'nickname\': \'某某示例科技\', \'title\': \'还有人不知道我们公司有什么吗？\'}' },
+        { ts: iso(t0 + 66 * 1000), level: 'info', text: '2026-11-11 10:01:06 MediaCrawler INFO (core.py:560) - [store.douyin.update_douyin_aweme] douyin aweme: {\'aweme_id\': \'d1\', \'nickname\': \'某某科技\', \'title\': \'还有人不知道我们公司有什么吗？\'}' },
         { ts: iso(t0 + 120 * 1000), level: 'ok', text: '===== [抖音] 结束：done =====' },
         { ts: iso(t0 + 121 * 1000), level: 'info', text: '===== [B站] 开始采集 platform=bili =====' },
         { ts: iso(t0 + 124 * 1000), level: 'info', text: '2026-11-11 10:02:04 MediaCrawler INFO (core.py:266) - [BilibiliCrawler.search] Search contents :[BilibiliVideo(video_id=\'b1\'), BilibiliVideo(video_id=\'b2\')]' },
@@ -2036,7 +2036,7 @@
     },
     reportConnection: function () { return delay(140, reportConnectionPayload()); },
     reportsKeywords: function () {
-      return delay(120, { keywords: ['示例科技', '某某示例', '产品评测', '售后服务'] });
+      return delay(120, { keywords: ['示例科技', '某某科技', '产品评测', '售后服务'] });
     },
     /** 自测/演示：切换模拟连接状态（true=已连接，false=未连接） */
     setReportConnection: function (connected) {

@@ -287,7 +287,7 @@ def _build_negative(stats: Dict[str, Any]) -> Dict[str, Any]:
         "「历史存量·已沉淀」；近 14 天仍有负面评论互动的标记为「持续观察」；其余标记为「待评估」。"
         "生产环境接入工单系统后，应以真实处理进度（待处理/处理中/已解决/已忽略）替换。"
         + (
-            f"另有 {len(entity_risk_events)} 起负面内容疑似指向同名/关联主体（非某某示例科技），"
+            f"另有 {len(entity_risk_events)} 起负面内容疑似指向同名/关联主体（非某某科技），"
             "已在表格中以“主体甄别”标注，建议人工复核后再决定是否纳入本公司负面口径。"
             if entity_risk_events
             else ""

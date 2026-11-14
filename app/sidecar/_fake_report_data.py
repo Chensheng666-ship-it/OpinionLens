@@ -39,7 +39,7 @@ def build_report_package(
     sampled_texts = [
         {"id": "fake_c1", "text": "示例科技在基础设施安全监测领域表现积极，好评较多"},
         {"id": "fake_c2", "text": "有用户反馈相关项目交付进度偏慢，体验一般"},
-        {"id": "fake_c3", "text": "某某示例科技获得政策支持，行业关注度上升"},
+        {"id": "fake_c3", "text": "某某科技获得政策支持，行业关注度上升"},
     ]
     sentiment_rows: List[Dict[str, Any]] = []
     analyzer_error = ""

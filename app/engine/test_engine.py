@@ -189,7 +189,7 @@ def test_config_mapping() -> None:
         "info 摘要（db_path/user_data_dir）正确",
         info["db_path"] == expected_db and info["user_data_dir"].endswith("%s_user_data_dir"),
     )
-    check("关键词解析支持中英文逗号/空白", patches.parse_keywords("示例科技， 某某示例 ,,A") == ["示例科技", "某某示例", "A"])
+    check("关键词解析支持中英文逗号/空白", patches.parse_keywords("示例科技， 示例品牌 ,,A") == ["示例科技", "示例品牌", "A"])
 
 
 # --------------------------------------------------------------------------------------
@@ -1416,7 +1416,7 @@ def test_kuaishou_search_patch() -> None:
                 return {
                     "result": 1,
                     "feeds": [
-                        {"photo": {"id": "a", "caption": "某某示例科技：守护城市安全"}},
+                        {"photo": {"id": "a", "caption": "示例科技：守护城市安全"}},
                         {"photo": {"id": "x", "caption": "无人机吊运推荐"}},
                     ],
                     "pcursor": "PAGE2-CURSOR",
@@ -1496,21 +1496,21 @@ def test_kuaishou_relevance_filter() -> None:
         tokens[:2] == ["示例科技", "示例"],
         str(tokens),
     )
-    tokens2 = patches._ks_relevance_tokens("某某示例科技有限公司")
-    check("相关词: 连续去“有限公司/科技”等后缀得到某某示例", "某某示例" in tokens2, str(tokens2))
+    tokens2 = patches._ks_relevance_tokens("某某科技有限公司")
+    check("相关词: 连续去“有限公司/科技”等后缀得到“某某”核心词", "某某" in tokens2, str(tokens2))
 
     previous = os.environ.pop("ENGINE_KS_RELEVANCE_EXTRA", None)
     try:
-        os.environ["ENGINE_KS_RELEVANCE_EXTRA"] = "示例人物,某某示例"
+        os.environ["ENGINE_KS_RELEVANCE_EXTRA"] = "示例人物,某某科技"
         tokens3 = patches._ks_relevance_tokens("示例科技")
-        check("相关词: ENGINE_KS_RELEVANCE_EXTRA 追加（中英文逗号）", "示例人物" in tokens3 and "某某示例" in tokens3, str(tokens3))
+        check("相关词: ENGINE_KS_RELEVANCE_EXTRA 追加（中英文逗号）", "示例人物" in tokens3 and "某某科技" in tokens3, str(tokens3))
     finally:
         os.environ.pop("ENGINE_KS_RELEVANCE_EXTRA", None)
         if previous is not None:
             os.environ["ENGINE_KS_RELEVANCE_EXTRA"] = previous
 
     feeds = [
-        {"photo": {"caption": "某某示例科技守护城市安全"}, "author": {"name": "某媒体"}},
+        {"photo": {"caption": "示例科技守护城市安全"}, "author": {"name": "某媒体"}},
         {"photo": {"caption": "无人机吊运推荐"}},
         {"photo": {"caption": "Rokid glasses review"}},
     ]
@@ -1520,7 +1520,7 @@ def test_kuaishou_relevance_filter() -> None:
         len(filtered.get("feeds") or []) == 1 and "示例" in filtered["feeds"][0]["photo"]["caption"],
         str(filtered.get("feeds")),
     )
-    nickname_feed = [{"photo": {"caption": "无关标题"}, "author": {"name": "某某示例科技"}}]
+    nickname_feed = [{"photo": {"caption": "无关标题"}, "author": {"name": "示例科技"}}]
     check(
         "相关过滤: 昵称命中（author.name）也保留",
         len(patches._ks_filter_feeds({"feeds": nickname_feed}, "示例科技")["feeds"]) == 1,
@@ -1579,7 +1579,7 @@ def test_cli_args() -> None:
             "--platform",
             "xhs",
             "--keywords",
-            "示例科技,某某示例",
+            "示例科技,示例品牌",
             "--max-notes",
             "5",
             "--comments",
