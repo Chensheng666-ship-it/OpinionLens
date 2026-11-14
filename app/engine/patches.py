@@ -72,14 +72,31 @@ from adapters.session import (
     reset_session,
     start_session,
 )
-from adapters.login import (
-    DEFAULT_QR_FALLBACK_SELECTORS,
-    DEFAULT_QR_USER_AGENT,
-    LOGIN_CLASSES,
-    LOGIN_CLASS_CONTRACTS,
+from adapters.manual import (
     MANUAL_KIND_LABELS,
     MANUAL_WAIT_SECONDS,
-    _login_class,
+    SLIDER_PHRASES,
+    SLIDER_TITLE_HINTS,
+    SMS_PHRASES,
+    VERIFY_URL_HINTS,
+    ManualGate,
+    _manual_message,
+    _safe_page_inner_text,
+    _safe_page_title,
+    _safe_page_url,
+    detect_verification,
+    wait_manual_before_begin,
+)
+from adapters.network import (
+    _is_network_exception,
+    _recent_network_exception,
+    _record_network_exception,
+    clear_network_transient,
+    install_network_error_hook,
+)
+from adapters.qr import (
+    DEFAULT_QR_FALLBACK_SELECTORS,
+    DEFAULT_QR_USER_AGENT,
     QR_FAIL_MESSAGE,
     QR_FAIL_MESSAGE_TIEBA,
     QR_FALLBACK_SELECTORS,
@@ -99,14 +116,9 @@ from adapters.login import (
     QR_SHORT_WAIT_MS,
     QR_TIEBA_STRICT_DECODE,
     QR_VIEW_ENTRY_SELECTORS,
-    SLIDER_PHRASES,
-    SLIDER_TITLE_HINTS,
-    SMS_PHRASES,
     TIEBA_QR_LOGIN_URL,
-    VERIFY_URL_HINTS,
     WEIBO_QR_LOGIN_URL,
     WEIBO_QR_USER_AGENT,
-    ManualGate,
     QrCapture,
     _acquire_qr_once,
     _cv2_decode_qr,
@@ -114,38 +126,33 @@ from adapters.login import (
     _element_geometry,
     _find_qr_element,
     _http_download_qr,
-    _is_network_exception,
-    _manual_message,
     _page_user_agent,
     _prepare_qr_view,
     _qr_already_visible,
     _qr_candidate_from_element,
-    _recent_network_exception,
-    _record_network_exception,
+    _qr_visible_for_platform,
     _reload_login_page,
     _run_qr_rounds,
-    _safe_page_inner_text,
-    _safe_page_title,
-    _safe_page_url,
     _short_wait_original_find,
     _switch_tieba_to_passport_qr_page,
     _switch_weibo_to_desktop_qr_page,
     _wait_image_loaded,
-    clear_network_transient,
-    close_crawler,
-    detect_verification,
     extract_qr_fallback,
     inspect_qr_candidates,
-    install_network_error_hook,
     install_qr_capture,
+    validate_qr_bytes,
+    validate_qr_data_uri,
+)
+from adapters.login import (
+    LOGIN_CLASSES,
+    LOGIN_CLASS_CONTRACTS,
+    _login_class,
+    close_crawler,
     install_qr_fallback,
     instrument_login_class,
     patch_login_blocked,
     patch_login_only,
     should_trigger_sms,
-    validate_qr_bytes,
-    validate_qr_data_uri,
-    wait_manual_before_begin,
     watch_login_page,
 )
 from adapters.platform_douyin import (
@@ -174,8 +181,6 @@ from adapters.platform_weibo import (
 )
 
 log = logging.getLogger("engine.patches")
-
-EVENT_PREFIX = "##EVENT##"
 
 EVENT_PREFIX = "##EVENT##"
 
@@ -682,6 +687,9 @@ _ADAPTER_MODULES = (
     adapters.login,
     adapters.content,
     adapters.session,
+    adapters.qr,
+    adapters.manual,
+    adapters.network,
     adapters.platform_xhs,
     adapters.platform_douyin,
     adapters.platform_kuaishou,
@@ -691,24 +699,27 @@ _ADAPTER_MODULES = (
     adapters.platform_zhihu,
 )
 
-# 名字 -> 定义它的适配器模块。``patches.xxx = ...`` 会同步写回适配器，
-# 保持历史用法（entry / 自测通过门面替换实现，例如 detect_verification）。
-_MIRROR: Dict[str, Any] = {}
+# 名字 -> 绑定它的所有适配器模块（含"从别处 import 进来"的模块）。
+# ``patches.xxx = ...`` 会同步写回这些模块，保持历史用法
+# （entry / 自测通过门面替换实现，例如 detect_verification：manual 定义 + login 引用都要换）。
+_MIRROR: Dict[str, List[types.ModuleType]] = {}
 for _module in _ADAPTER_MODULES:
     for _name, _value in vars(_module).items():
         if _name.startswith("__") or isinstance(_value, types.ModuleType):
             continue
         if _name in globals() and globals()[_name] is _value:
-            _MIRROR.setdefault(_name, _module)
+            modules = _MIRROR.setdefault(_name, [])
+            if _module not in modules:
+                modules.append(_module)
 
 
 class _FacadeModule(types.ModuleType):
     """门面模块：写属性时同步到实现模块，避免「只改门面、内部仍用旧实现」。"""
 
     def __setattr__(self, name: str, value: Any) -> None:
-        owner = _MIRROR.get(name)
-        if owner is not None and owner is not self:
-            setattr(owner, name, value)
+        for owner in _MIRROR.get(name, ()):
+            if owner is not self:
+                setattr(owner, name, value)
         super().__setattr__(name, value)
 
 

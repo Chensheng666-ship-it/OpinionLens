@@ -2229,6 +2229,141 @@ def test_facade_signature_still_stable() -> None:
 
 
 # --------------------------------------------------------------------------------------
+# 11. M1.6：login.py 按职责拆分（qr / manual / network / login）
+# --------------------------------------------------------------------------------------
+def test_qr_module_pure_validation() -> None:
+    """qr.py 纯函数可离线单测：合法 PNG / 非图片 / 过小图 三种输入判定。"""
+    qr_mod = adapters.qr
+    good = qr_mod.validate_qr_bytes(synth_png("m16-qr"))
+    bad = qr_mod.validate_qr_bytes(b"definitely not an image")
+    small = qr_mod.validate_qr_bytes(make_solid_png((40, 40)))
+
+    check(
+        "qr.validate_qr_bytes: 合法 PNG -> ok=True 且宽高 128",
+        good.get("ok") is True and good.get("width") == 128 and good.get("height") == 128,
+        str(good),
+    )
+    check(
+        "qr.validate_qr_bytes: 非图片字节 -> ok=False（reason=decode:*）",
+        bad.get("ok") is False and str(bad.get("reason")).startswith("decode:"),
+        str(bad),
+    )
+    check(
+        "qr.validate_qr_bytes: 40x40 过小 -> ok=False（reason=size:*）",
+        small.get("ok") is False and str(small.get("reason")).startswith("size:"),
+        str(small),
+    )
+    ok, uri, info = qr_mod.validate_qr_data_uri(
+        "data:image/png;base64," + base64.b64encode(synth_png("m16-qr-uri")).decode()
+    )
+    check(
+        "qr.validate_qr_data_uri: 合法 data URI 返回规范化 data:image/png",
+        ok is True and uri.startswith("data:image/png;base64,") and info.get("ok") is True,
+        str(info),
+    )
+
+
+def test_manual_module_detection() -> None:
+    """manual.py 验证页检测：命中（安全验证/短信文案）与不命中（普通登录页）。"""
+    manual = adapters.manual
+    hit = run_async(manual.detect_verification(FakeVerifyPage(title="安全验证")))
+    miss = run_async(
+        manual.detect_verification(
+            FakeVerifyPage(title="小红书 - 你的生活兴趣社区", text="登录 扫码登录 验证码登录")
+        )
+    )
+    sms = run_async(manual.detect_verification(FakeVerifyPage(title="小红书", text="短信验证码\n请输入短信验证码")))
+    check("manual.detect_verification: 标题=安全验证 -> slider 命中", bool(hit) and hit.get("kind") == "slider", str(hit))
+    check("manual.detect_verification: 普通登录页 -> None（不误报）", miss is None, str(miss))
+    check("manual.detect_verification: 短信专属文案 -> sms", bool(sms) and sms.get("kind") == "sms", str(sms))
+    check(
+        "manual.ManualGate: 同一 kind 20s 内不重复发 need_manual（去重逻辑随模块搬迁）",
+        callable(manual.ManualGate) and manual.MANUAL_WAIT_SECONDS == 240.0,
+    )
+
+
+def test_network_module_hook_idempotent() -> None:
+    """network.install_network_error_hook 幂等；reset_session 后状态不串、可重装。"""
+    import httpx
+
+    network = adapters.network
+    patches.reset_session()
+    first = network.install_network_error_hook()
+    wrapped = httpx.AsyncClient.request
+    second = network.install_network_error_hook()
+    check(
+        "network hook: 连续两次调用只装一次（httpx.AsyncClient.request 对象不变）",
+        first == {"installed": True} and second == {"installed": True} and httpx.AsyncClient.request is wrapped,
+        f"first={first} second={second}",
+    )
+    check(
+        "network hook: 幂等标记挂在当前 PatchSession",
+        patches.current_session().is_installed("install_network_error_hook"),
+    )
+
+    network._record_network_exception(RuntimeError("ConnectTimeout: boom"))
+    before = network._recent_network_exception()
+    patches.reset_session()
+    after = network._recent_network_exception()
+    check(
+        "network hook: reset_session 后旧网络异常不串到新会话",
+        before != "" and after == "",
+        f"before={before!r} after={after!r}",
+    )
+
+    patches.EventEmitter("xhs", "login", [].append)  # 新一轮运行（新 PatchSession）
+    reinstalled = network.install_network_error_hook()
+    check(
+        "network hook: 新会话可重装（包装对象换新、仍只一层）",
+        reinstalled == {"installed": True} and httpx.AsyncClient.request is not wrapped,
+        str(reinstalled),
+    )
+
+
+def test_split_facade_exports_and_login_size() -> None:
+    """拆分后门面导出齐全、签名不变；login.py 瘦身且职责收敛。"""
+    import inspect
+
+    expected = {
+        "install_qr_fallback": ["mc", "emitter", "platform", "manual", "keepalive"],
+        "instrument_login_class": ["mc", "emitter", "platform", "state", "manual"],
+        "patch_login_blocked": ["mc", "platform"],
+        "patch_login_only": ["crawler", "state"],
+    }
+    missing = [name for name in expected if not callable(getattr(patches, name, None))]
+    check("门面: 4 个登录补丁边界仍从 patches 可用", not missing, str(missing))
+    bad = [
+        name
+        for name, params in expected.items()
+        if list(inspect.signature(getattr(patches, name)).parameters) != params
+    ]
+    check("门面: 4 个边界签名与拆分前一致", not bad, str(bad))
+
+    adapters_dir = ENGINE_DIR / "adapters"
+    sizes = {name: len((adapters_dir / f"{name}.py").read_text(encoding="utf-8").splitlines()) for name in ("qr", "manual", "network", "login")}
+    check(
+        "拆分: login.py ≤ 700 行，qr/manual/network 各自独立成文件",
+        sizes["login"] <= 700 and all(size > 50 for size in sizes.values()),
+        str(sizes),
+    )
+    check(
+        "拆分: 登录模块不再承载 QR/网络实现（职责收敛）",
+        not hasattr(adapters.login, "QrCapture")
+        and not hasattr(adapters.login, "validate_qr_bytes")
+        and not hasattr(adapters.login, "install_network_error_hook"),
+    )
+    exported = {
+        name: [symbol for symbol in getattr(adapters, name).__all__ if hasattr(getattr(adapters, name), symbol)]
+        for name in ("qr", "manual", "network")
+    }
+    check(
+        "拆分: qr/manual/network 各有明确 __all__ 且符号都存在",
+        all(len(exported[name]) >= 3 for name in exported),
+        str({name: len(symbols) for name, symbols in exported.items()}),
+    )
+
+
+# --------------------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------------------
 def main() -> int:
@@ -2282,6 +2417,10 @@ def main() -> int:
         test_detect_upstream_contract_cache,
         test_engine_incompatible_has_no_log_side_effect,
         test_facade_signature_still_stable,
+        test_qr_module_pure_validation,
+        test_manual_module_detection,
+        test_network_module_hook_idempotent,
+        test_split_facade_exports_and_login_size,
     ]
     for test in tests:
         print(f"\n--- {test.__name__} ---")

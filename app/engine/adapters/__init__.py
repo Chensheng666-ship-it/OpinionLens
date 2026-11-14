@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from adapters import base, browser, content, login, session
+from adapters import base, browser, content, login, manual, network, qr, session
 from adapters import platform_bilibili, platform_douyin, platform_kuaishou, platform_tieba
 from adapters import platform_weibo, platform_xhs, platform_zhihu
 from adapters.base import (
@@ -44,6 +44,16 @@ from adapters.base import (
     set_warning_emitter,
 )
 from adapters.login import LOGIN_CLASSES, LOGIN_CLASS_CONTRACTS, _login_class
+from adapters.manual import ManualGate, detect_verification, wait_manual_before_begin
+from adapters.network import clear_network_transient, install_network_error_hook
+from adapters.qr import (
+    QrCapture,
+    extract_qr_fallback,
+    inspect_qr_candidates,
+    install_qr_capture,
+    validate_qr_bytes,
+    validate_qr_data_uri,
+)
 from adapters.session import (
     PatchSession,
     current_session,
@@ -59,6 +69,9 @@ __all__ = [
     "browser",
     "content",
     "login",
+    "manual",
+    "network",
+    "qr",
     "session",
     "platform_bilibili",
     "platform_douyin",
@@ -71,18 +84,29 @@ __all__ = [
     "EnginePatchError",
     "LOGIN_CLASSES",
     "LOGIN_CLASS_CONTRACTS",
+    "ManualGate",
     "MissingSymbol",
     "PatchSession",
+    "QrCapture",
     "UpstreamSymbol",
     "adapter_registry",
     "clear_contract_cache",
+    "clear_network_transient",
     "contract_cache_info",
     "detect_upstream_contract",
+    "detect_verification",
     "emit_patch_error",
     "emit_patch_warning",
+    "extract_qr_fallback",
+    "inspect_qr_candidates",
+    "install_network_error_hook",
+    "install_qr_capture",
     "iter_contracts",
     "patch_warning_counts",
     "require_patch",
     "reset_session",
     "start_session",
+    "validate_qr_bytes",
+    "validate_qr_data_uri",
+    "wait_manual_before_begin",
 ]
