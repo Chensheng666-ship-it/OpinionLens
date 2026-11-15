@@ -160,7 +160,6 @@ URL 参数演示 404 降级（后端未接线场景）：
 | `96b_real_tasks.png` | 真实应用 · 采集任务 |
 | `97_real_settings_notify.png` | 真实应用 · 设置（通知推送） |
 | `98_real_settings_pool.png` | 真实应用 · 设置（账号池策略） |
-| `99_real_reports.png` | 真实应用 · 报告中心 |
 
 ## 已知简化
 

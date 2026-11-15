@@ -106,9 +106,9 @@
 |---|---|
 | ![真实应用账号页](docs/preview/96b_real_accounts.png) | ![真实应用设置页](docs/preview/96_real_settings_model_api.png) |
 
-| 真实应用 · 通知推送 | 真实应用 · 报告中心 |
+| 真实应用 · 通知推送 | 真实应用 · 账号池 |
 |---|---|
-| ![真实应用通知设置](docs/preview/97_real_settings_notify.png) | ![真实应用报告中心](docs/preview/99_real_reports.png) |
+| ![真实应用通知设置](docs/preview/97_real_settings_notify.png) | ![真实应用账号池设置](docs/preview/98_real_settings_pool.png) |
 
 > 前两行为本地预览模式联调截图（数据均模拟）；后两行为 Electron 真实应用 + 本地 sidecar 截图
 > （使用本机既有测试数据）。截图不含真实账号、Cookie 与密钥。
