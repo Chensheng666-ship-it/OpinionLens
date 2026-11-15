@@ -20,7 +20,7 @@ test_notify.py — 舆见 OpinionLens 通知后端离线自测（不联网、不
   9. outbox/logs/settings/rules API：包裹键、重试、404/409/422 错误体、日志不含明文密钥。
 
 运行：
-  python app/sidecar/test_notify.py
+  python tests/python/test_notify.py
 
 也可被其它测试模块调用：``passed, failed = run(report=None)``。
 """
@@ -40,9 +40,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
+ROOT = Path(__file__).resolve().parents[2]  # tests/python/x.py -> 仓库根
+FIXTURES_DIR = ROOT / "tests" / "fixtures"
+SIDECAR_DIR = ROOT / "app" / "sidecar"
+ENGINE_DIR = ROOT / "app" / "engine"
+for _path in (FIXTURES_DIR, SIDECAR_DIR, ENGINE_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 # 说明：NOTIFY_TEST_MODE / NOTIFY_TEST_HTTP_BASE 只在 run() 执行期间注入并在结束时恢复，
 # 避免被 selftest 等模块 import 时污染进程环境（生产模式校验仍按真实环境走）。

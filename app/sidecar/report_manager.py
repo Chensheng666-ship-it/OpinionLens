@@ -125,6 +125,9 @@ def _load_report_data_module(module_name: Optional[str] = None) -> Tuple[Optiona
     ).strip()
     if not name:
         name = "report_data"
+    from runner.service import _ensure_module_search_path  # 延迟导入：替身只在测试时注入
+
+    _ensure_module_search_path(name)
     try:
         module = importlib.import_module(name)
     except Exception as exc:  # noqa: BLE001

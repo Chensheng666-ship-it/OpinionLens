@@ -9,7 +9,7 @@
 * 打包运行 / ``python app/sidecar/main.py`` 直跑 / CI 自测时该变量可能不存在，
   此时回退到 ``FALLBACK_VERSION``。
 * ``FALLBACK_VERSION`` 必须与 ``app/desktop/package.json`` 的 ``version`` 一致，
-  离线自测 ``app/sidecar/selftest.py`` 会断言这一点（``版本号一致性``）。
+  离线自测 ``tests/python/selftest.py`` 会断言这一点（``版本号一致性``）。
 
 改版本号流程：改 ``package.json`` → 同步 ``FALLBACK_VERSION`` → 补 ``CHANGELOG.md``。
 不要再在别处硬编码版本字符串（历史上 ``0.6.0`` / ``0.3.0`` / ``0.1.0`` 三个值同时存在过）。

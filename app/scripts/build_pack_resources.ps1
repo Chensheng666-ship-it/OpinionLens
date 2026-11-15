@@ -323,11 +323,14 @@ $stagingMBAfterPrune = Get-DirSizeMB $OutDir
 Step 'copying sidecar runtime files'
 $sidecarOut = Join-Path $OutDir 'sidecar'
 if (Test-Path $sidecarOut) { Remove-Item -LiteralPath $sidecarOut -Recurse -Force }
+# NOTE: '/XF selftest.py test_*.py _fake_*' 是历史遗留（R1 后测试/替身已移到 tests/），保留无害：
+# 旧检出里若还残留这些文件，也不会被打进安装包。
 RoboCopyChecked (Join-Path $Repo 'app\sidecar') $sidecarOut @('/XD', '__pycache__', '_fixtures', '/XF', 'selftest.py', 'test_*.py', '_fake_*')
 
 Step 'copying engine files'
 $engineOut = Join-Path $OutDir 'engine'
 if (Test-Path $engineOut) { Remove-Item -LiteralPath $engineOut -Recurse -Force }
+# NOTE: '/XF test_engine.py _probe_xhs_login.py' 同上（R1 后已移到 tests/），保留无害。
 RoboCopyChecked (Join-Path $Repo 'app\engine') $engineOut @('/XD', '__pycache__', '/XF', 'test_engine.py', '_probe_xhs_login.py')
 
 Step 'copying MediaCrawler source (no .venv / browser data / docs / webui / verification)'

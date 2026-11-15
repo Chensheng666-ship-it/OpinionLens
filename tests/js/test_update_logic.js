@@ -1,16 +1,16 @@
 // =============================================================================
-// app/scripts/test_update_logic.js — 更新逻辑离线单测（无网络、无 Electron）
+// tests/js/test_update_logic.js — 更新逻辑离线单测（无网络、无 Electron）
 //
 // 运行：
-//   node app/scripts/test_update_logic.js
-// 由 app/scripts/selftest.ps1 自动调用；失败时退出码 1。
+//   node tests/js/test_update_logic.js
+// 由 app/scripts/selftest.ps1 自动调用（脚本在 tests/js/）；失败时退出码 1。
 // =============================================================================
 'use strict';
 
 const assert = require('node:assert');
 const path = require('node:path');
 
-const mod = require(path.join(__dirname, '..', 'desktop', 'update.js'));
+const mod = require(path.join(__dirname, '..', '..', 'app', 'desktop', 'update.js'));
 const { compareVersions, isNewer, pickInstallerAsset, normalizeVersion } = mod;
 
 let passed = 0;

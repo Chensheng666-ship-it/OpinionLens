@@ -2,7 +2,7 @@
 """Engine 门面（M2）：实现已拆到 ``app/sidecar/runner/*``，这里只做 re-export。
 
 对外契约不变：``main.py`` / ``account_manager.py`` / ``selftest.py`` / ``api_*`` /
-``report_manager`` 以及 ``app/sidecar/test_*.py`` 仍从 ``engine_runner`` 导入同一批符号
+``report_manager`` 以及 ``tests/python/test_*.py`` 仍从 ``engine_runner`` 导入同一批符号
 （见 ``runner.__all__``，由 test_run_manager 逐个 getattr 守护）。
 """
 

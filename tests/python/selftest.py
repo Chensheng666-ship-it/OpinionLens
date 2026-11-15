@@ -4,7 +4,7 @@
 运行方式（契约 §5.1）::
 
     # 用 MediaCrawler venv 的 python 执行
-    MediaCrawler\\.venv\\Scripts\\python.exe app/sidecar/selftest.py
+    MediaCrawler\\.venv\\Scripts\\python.exe tests/python/selftest.py
 
 覆盖链路：
 
@@ -52,11 +52,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-SIDECAR_DIR = Path(__file__).resolve().parent
-if str(SIDECAR_DIR) not in sys.path:
-    sys.path.insert(0, str(SIDECAR_DIR))
+ROOT = Path(__file__).resolve().parents[2]  # tests/python/x.py -> 仓库根
+FIXTURES_DIR = ROOT / "tests" / "fixtures"
+SIDECAR_DIR = ROOT / "app" / "sidecar"
+ENGINE_DIR = ROOT / "app" / "engine"
+for _path in (FIXTURES_DIR, SIDECAR_DIR, ENGINE_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
-PROJECT_ROOT = SIDECAR_DIR.parent.parent
+PROJECT_ROOT = ROOT
 MAIN_PY = SIDECAR_DIR / "main.py"
 
 
@@ -494,7 +498,7 @@ def phase0_config_unit(report: Report, data_dir: Path) -> None:
         data_dir=unit_dir,
         mc_root=offline_mc_root(),
         python=Path(sys.executable),
-        engine_entry=SIDECAR_DIR / "_fake_engine.py",
+        engine_entry=FIXTURES_DIR / "_fake_engine.py",
     )
     report.check(
         "SidecarConfig 默认登录有头（login_headless=False）",

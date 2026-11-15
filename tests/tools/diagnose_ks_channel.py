@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """对比 Chrome vs Edge(msedge) 浏览器内核下，快手搜索接口是否返回不同结果。
-用法: python diagnose_ks_channel.py chrome|msedge
+用法: python tests/tools/diagnose_ks_channel.py chrome|msedge
 """
 from __future__ import annotations
 

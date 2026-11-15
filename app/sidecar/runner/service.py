@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import sys
 import threading
 import time
 import uuid
@@ -20,6 +21,7 @@ from version import APP_VERSION as SIDECAR_VERSION
 from .config import (
     PLATFORM_LABELS,
     PLATFORMS,
+    PROJECT_ROOT,
     EngineStartError,
     ServiceError,
     SidecarConfig,
@@ -34,6 +36,22 @@ from .run import RUN_STATUS_RUNNING, EngineProcessBackend, RunManager
 log = logging.getLogger("sidecar.engine")  # 沿用旧 logger 名：日志输出与拆分前逐字节一致
 
 
+def _ensure_module_search_path(module_name: str) -> None:
+    """把 ``tests/fixtures`` 加进 ``sys.path``，供「按模块名注入」的测试替身使用。
+
+    R1 后替身（``_fake_exporter`` / ``_fake_report_data`` / ``_fake_*``）位于
+    ``tests/fixtures/``，产品侧仍通过环境变量按**模块名**注入
+    （``SIDECAR_EXPORTER_MODULE`` / ``SIDECAR_REPORT_DATA_MODULE`` 等），
+    因此 import 前补一次搜索路径。只有 ``_fake_`` 前缀生效，生产模块的导入路径不变。
+    """
+    name = str(module_name or "")
+    if not name.startswith("_fake_"):
+        return
+    fixtures = (Path(PROJECT_ROOT) / "tests" / "fixtures").resolve()
+    if fixtures.is_dir() and str(fixtures) not in sys.path:
+        sys.path.insert(0, str(fixtures))
+
+
 def load_exporter() -> Tuple[Optional[Callable[..., Any]], Optional[Callable[..., Any]], str]:
     """尝试加载同目录 exporter。
 
@@ -46,6 +64,7 @@ def load_exporter() -> Tuple[Optional[Callable[..., Any]], Optional[Callable[...
     import importlib
 
     module_name = (_env_str("SIDECAR_EXPORTER_MODULE") or "exporter").strip()
+    _ensure_module_search_path(module_name)  # 替身只在测试时注入（tests/fixtures）
     try:
         module = importlib.import_module(module_name)
     except Exception as exc:  # noqa: BLE001 - 缺 exporter 时 sidecar 仍要能启动
@@ -68,6 +87,7 @@ def load_run_feed() -> Tuple[Optional[Callable[..., Any]], str]:
     import importlib
 
     module_name = (_env_str("SIDECAR_RUN_FEED_MODULE") or "run_feed").strip()
+    _ensure_module_search_path(module_name)  # 替身只在测试时注入（tests/fixtures）
     try:
         module = importlib.import_module(module_name)
     except Exception as exc:  # noqa: BLE001 - 内容流未就绪时 sidecar 仍要能启动

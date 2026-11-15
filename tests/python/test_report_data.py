@@ -30,13 +30,20 @@ import os
 import shutil
 import sqlite3
 import sys
+from pathlib import Path
 import tempfile
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-PROJECT_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+ROOT = Path(__file__).resolve().parents[2]  # tests/python/x.py -> 仓库根
+FIXTURES_DIR = ROOT / "tests" / "fixtures"
+SIDECAR_DIR = ROOT / "app" / "sidecar"
+ENGINE_DIR = ROOT / "app" / "engine"
+for _path in (FIXTURES_DIR, SIDECAR_DIR, ENGINE_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+HERE = str(SIDECAR_DIR)  # 读取/引用产品模块仍按 app/sidecar 解析
+PROJECT_ROOT = str(ROOT)
 
 from report_data import (  # noqa: E402
     DEFAULT_PLATFORMS,

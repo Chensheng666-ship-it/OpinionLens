@@ -4,10 +4,10 @@
 用途（验收 supplement；离线自测见 ``selftest.py``）::
 
     # 7 平台矩阵（每个平台启动一次真实有头登录，拿到 QR/need_manual 后取消）
-    python app/sidecar/_real_login_check.py
+    python tests/tools/_real_login_check.py
 
     # 只测小红书/微博，微博最多重试 3 次
-    python app/sidecar/_real_login_check.py --platforms xhs,wb --wait 60
+    python tests/tools/_real_login_check.py --platforms xhs,wb --wait 60
 
 它做的是纯黑盒检查：
   1. 用临时 data-dir 启动**真实 sidecar**（真实 engine，登录默认 `--headless false` 打开可见 Edge 窗口）；
@@ -35,10 +35,14 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-SIDECAR_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SIDECAR_DIR.parent.parent
-if str(SIDECAR_DIR) not in sys.path:
-    sys.path.insert(0, str(SIDECAR_DIR))
+ROOT = Path(__file__).resolve().parents[2]  # tests/tools/x.py -> 仓库根
+FIXTURES_DIR = ROOT / "tests" / "fixtures"
+SIDECAR_DIR = ROOT / "app" / "sidecar"
+ENGINE_DIR = ROOT / "app" / "engine"
+for _path in (FIXTURES_DIR, SIDECAR_DIR, ENGINE_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+PROJECT_ROOT = ROOT
 
 import engine_runner as er  # noqa: E402  （复用进程枚举/浏览器清理）
 

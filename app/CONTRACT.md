@@ -15,12 +15,13 @@ app/
 ├─ engine/                #   MediaCrawler 包装入口（唯一允许触碰 MediaCrawler 配置/patch 的地方）
 │  ├─ entry.py            #   主入口：--mode login|test|crawl
 │  ├─ patches.py          #   show_qrcode / channel / 配置 / 事件 全部 patch
-│  └─ _probe_xhs_login.py #   已验证的探针（可参考，不用于生产）
+│  ├─ crawl_options.py    #   采集高级参数（间隔/并发/排序）解析
+│  └─ adapters/           #   按职责拆分的适配器 + 上游契约探测
 ├─ sidecar/               #   FastAPI 本地服务（桌面端唯一后端）
 │  ├─ main.py             #   入口：--port 0 --token xxx --data-dir <abs>
 │  ├─ engine_runner.py    #   启动/解析 engine 事件、登录会话、采集编排
 │  ├─ exporter.py         #   sqlite → Excel
-│  ├─ selftest.py         #   离线自测（不联网）：API + 事件解析 + 导出
+│  ├─ runner/             #   config/process/guard/login/run/service（M2 拆分）
 │  └─ state.py            #   app.db 持久化（sqlite3 标准库）
 ├─ desktop/               #   Electron 壳（main/preload + renderer）
 │  ├─ main.js             #   Electron 主进程：spawn sidecar、随机端口/token、健康检查、窗口、IPC
@@ -156,7 +157,7 @@ python engine/entry.py --mode crawl --platform xhs --keywords "示例科技" --m
 - `--mode login --platform xhs`：真实网络下 30s 内出现 `login.qrcode` 事件且 `<data-dir>/qr/*.png` 为有效二维码；无人扫码时按 `--timeout` 超时输出 `engine.finished ok:false`（不崩溃）。
 - `--mode test --platform xhs`：无登录态时 `test.result ok:false`；有登录态时 ok:true（用户扫码后可测）。
 - `--mode crawl ...`：无登录态时立即 `engine.finished ok:false, message:"未登录"`。
-- 自测脚本 `engine/test_engine.py`（不联网）：验证事件前缀解析、patch 生效（identity 函数、show_qrcode 替换）、参数映射、`engine.finished` 必出。
+- 自测脚本 `tests/python/test_engine.py`（不联网）：验证事件前缀解析、patch 生效（identity 函数、show_qrcode 替换）、参数映射、`engine.finished` 必出。
 
 ---
 
@@ -271,7 +272,7 @@ def preview_run(db_path: str, keywords: list[str], started_ts: int, limit: int =
   - 其余列原样输出（列名保持数据库字段名）。
 - 首表 `概览`：run_id、关键词、采集开始时间、导出时间、各 sheet 行数、合计。
 - 文件名：`<关键字首个>_舆情数据_<YYYYMMDD_HHMMSS>.xlsx`（放 `<out_dir>/exports/`）。
-- 必须附 `sidecar/test_exporter.py`：**用样例 Excel 反向构造一个临时 sqlite**（或直接构造最小行）跑通导出与过滤，不联网。
+- 必须附 `tests/python/test_exporter.py`：**用样例 Excel 反向构造一个临时 sqlite**（或直接构造最小行）跑通导出与过滤，不联网。
 
 ---
 
@@ -290,7 +291,7 @@ def preview_run(db_path: str, keywords: list[str], started_ts: int, limit: int =
 - 开发辅助参数：`electron . --screenshot <out.png>` → 页面加载完成 2s 后 `webContents.capturePage()` 存 PNG 并退出（供验收/自动化截图使用）；`--no-sidecar` 仅调试 UI。
 - 日志：sidecar stdout 末尾写 `<data-dir>/logs/sidecar.log`。
 - **版本更新（2026-11-13）**：renderer 不直连外网，检查/下载都由主进程代做；确定性逻辑（版本比较、资产挑选）放在
-  `app/desktop/update.js`（纯 Node，可离线单测 `app/scripts/test_update_logic.js`）。
+  `app/desktop/update.js`（纯 Node，可离线单测 `tests/js/test_update_logic.js`）。
   - `app:checkUpdate` → 查 `https://api.github.com/repos/<FS_UPDATE_REPO or SolitudeZY/OpinionLens>/releases/latest`，
     返回 `{ok, current, latest, hasUpdate, releaseUrl, releaseName, notes(≤4000 字), publishedAt,
     download:{name,size,url}|null, source:'api'|'redirect', warning?, error?}`；
@@ -365,11 +366,13 @@ contextBridge.exposeInMainWorld('fsapi', {
 
 ## 5. 自测与验收
 
-1. `python app/sidecar/selftest.py`：离线自测（启动 sidecar → health/config/accounts → 用假 engine（`--mock-engine` 环境变量或注入 fake）跑一个 run → 导出 Excel → 校验文件存在与 sheet → 报告中心 fake LLM → 通知/模型/账号池）。
-2. `python app/engine/test_engine.py`：patch/事件/参数自测。
-3. 新功能离线测试：`app/sidecar/test_notify.py`（通知通道/outbox/重试/脱敏）、`app/sidecar/test_llm.py`
-   （模型 provider/协议/报告直连/降级）、`app/sidecar/test_account_pool.py`（账号池/选号/API/切号）、
-   `app/sidecar/test_report_data.py`、`app/sidecar/test_exporter.py`。
+1. `python tests/python/selftest.py`：离线自测（启动 sidecar → health/config/accounts → 用假 engine（`--mock-engine` 环境变量或注入 fake）跑一个 run → 导出 Excel → 校验文件存在与 sheet → 报告中心 fake LLM → 通知/模型/账号池）。
+2. `python tests/python/test_engine.py`：patch/事件/参数自测。
+3. 新功能离线测试：`tests/python/test_notify.py`（通知通道/outbox/重试/脱敏）、`tests/python/test_llm.py`
+   （模型 provider/协议/报告直连/降级）、`tests/python/test_account_pool.py`（账号池/选号/API/切号）、
+   `tests/python/test_report_data.py`、`tests/python/test_exporter.py`、`tests/python/test_run_manager.py`。
+   替身模块（`_fake_engine` / `_fake_exporter` / `_fake_llm_server` / `_fake_notify_server` / `_fake_report_data`）
+   在 `tests/fixtures/`，测试脚本自己把该目录加入 `sys.path`。
 4. `scripts/selftest.ps1`：以上 + Electron `--screenshot` 截图验证窗口。
 5. 手工验证：真实扫码登录小红书 → 二维码出现在 UI → 用户扫码 → 采集 5 条 → 导出 Excel 打开检查。
 

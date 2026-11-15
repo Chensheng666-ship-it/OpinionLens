@@ -1,7 +1,7 @@
 // =============================================================================
 // 舆见 OpinionLens — 更新相关的纯逻辑（无 Electron / 无网络依赖，可离线单测）
 //
-// 被测入口：app/scripts/test_update_logic.js（selftest.ps1 会跑），
+// 被测入口：tests/js/test_update_logic.js（selftest.ps1 会跑），
 // 调用方：app/desktop/main.js 的 app:checkUpdate / app:downloadUpdate。
 // =============================================================================
 'use strict';

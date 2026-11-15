@@ -3,7 +3,7 @@
 
 运行方式::
 
-    MediaCrawler\\.venv\\Scripts\\python.exe app/sidecar/test_llm.py
+    MediaCrawler\\.venv\\Scripts\\python.exe tests/python/test_llm.py
 
 覆盖：
 
@@ -28,11 +28,14 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-SIDECAR_DIR = Path(__file__).resolve().parent
-if str(SIDECAR_DIR) not in sys.path:
-    sys.path.insert(0, str(SIDECAR_DIR))
-
-PROJECT_ROOT = SIDECAR_DIR.parent.parent
+ROOT = Path(__file__).resolve().parents[2]  # tests/python/x.py -> 仓库根
+FIXTURES_DIR = ROOT / "tests" / "fixtures"
+SIDECAR_DIR = ROOT / "app" / "sidecar"
+ENGINE_DIR = ROOT / "app" / "engine"
+for _path in (FIXTURES_DIR, SIDECAR_DIR, ENGINE_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+PROJECT_ROOT = ROOT
 
 from _fake_llm_server import FAKE_API_KEY, FAKE_MODEL, FakeLLMServer  # noqa: E402
 from engine_runner import SidecarConfig  # noqa: E402

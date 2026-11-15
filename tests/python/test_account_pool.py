@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""多账号号池离线测试（Phase C3）：``python app/sidecar/test_account_pool.py``。
+"""多账号号池离线测试（Phase C3）：``python tests/python/test_account_pool.py``。
 
 覆盖：
 * ``account_manager.AccountManager``：legacy 默认账号懒创建、CRUD、默认账号唯一性、软删、
@@ -26,10 +26,14 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-SIDECAR_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = SIDECAR_DIR.parent.parent
-if str(SIDECAR_DIR) not in sys.path:
-    sys.path.insert(0, str(SIDECAR_DIR))
+ROOT = Path(__file__).resolve().parents[2]  # tests/python/x.py -> 仓库根
+FIXTURES_DIR = ROOT / "tests" / "fixtures"
+SIDECAR_DIR = ROOT / "app" / "sidecar"
+ENGINE_DIR = ROOT / "app" / "engine"
+for _path in (FIXTURES_DIR, SIDECAR_DIR, ENGINE_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+PROJECT_ROOT = ROOT
 
 import engine_runner  # noqa: E402
 from engine_runner import (  # noqa: E402
@@ -49,7 +53,7 @@ from account_manager import (  # noqa: E402
 )
 from events import bus  # noqa: E402
 
-FAKE_ENGINE = SIDECAR_DIR / "_fake_engine.py"
+FAKE_ENGINE = FIXTURES_DIR / "_fake_engine.py"
 PLATFORMS = list(PLATFORM_IDS)
 
 

@@ -22,7 +22,7 @@ $PY = "<仓库目录>\MediaCrawler\.venv\Scripts\python.exe"
 | `MC_ROOT` | `<project>/MediaCrawler` | engine 的 cwd 与 MediaCrawler 根目录 |
 | `SIDECAR_PYTHON` / `MC_PYTHON` | `<MC_ROOT>/.venv/Scripts/python.exe` | 启动 engine 用的解释器 |
 | `SIDECAR_ENGINE_ENTRY` | `app/engine/entry.py` | 覆盖 engine 入口（调试用） |
-| `FAKE_ENGINE` | 未设置 | 设为 `1` 时用 `app/sidecar/_fake_engine.py` 离线假引擎（自测/UI 联调，不联网） |
+| `FAKE_ENGINE` | 未设置 | 设为 `1` 时用 `tests/fixtures/_fake_engine.py` 离线假引擎（自测/UI 联调，不联网） |
 | `SIDECAR_LOGIN_HEADLESS` | 未设置（=有头） | `1/true` 时登录强制无头（自动化/无桌面环境）；默认登录打开可见 Edge 窗口 |
 | `SIDECAR_LOGIN_TIMEOUT` | **420** | login 模式传给 engine 的 `--timeout`（sidecar 另有 +120s 看门狗） |
 | `SIDECAR_TEST_TIMEOUT` | 90 | `/test` 同步等待上限（契约 ≤90s） |
@@ -57,9 +57,9 @@ POST /api/accounts/{p}/login
 ## 3. 自测（离线，不联网）
 
 ```powershell
-& $PY app\sidecar\selftest.py
+& $PY tests\python\selftest.py
 # 模拟 exporter 未就绪，验证 503 EXPORTER_UNAVAILABLE 降级分支：
-& $PY app\sidecar\selftest.py --simulate-missing-exporter
+& $PY tests\python\selftest.py --simulate-missing-exporter
 ```
 
 `selftest.py` 会：起 sidecar（`FAKE_ENGINE=1`）→ 阶段 0 单元校验（登录有头/420s/参数映射/need_manual kind 推断）→ **模型 API + 报告中心单元校验（本地 fake LLM：provider 脱敏/情感批量/narrative/降级）** → 鉴权/config/accounts → 扫码登录（confirmed / expired / cancelled / **need_manual(sms) 人工接管→waiting_scan 恢复→confirmed**，以及老 engine 无 kind 的 message 兜底推断）→ test 连接（**不同平台并发/同平台互斥/与 login·run 互斥**）→ 跑一个 xhs 成功 + dy 失败的 run（串行、部分失败继续、run=done）→ **断点续采 resume（模拟 xhs done/dy failed/ks skipped → 只续跑指定/未完成平台、run_id/started_ts 不变、saved_items 基线保留、全 done→done、重复 resume 409、导出包含全部）** → 日志/详情/列表 → 导出（真实 exporter 就绪则集成校验，未就绪走 503；再用 `_fake_exporter` 严格验证导出→excel_path→open-file 链路）→ **报告中心直连 fake 模型（config/capabilities/connection、生成 narrative+本地渲染、v2 修订、模型失败/非法输出→本地模板 degraded）** → 停止/互斥 → 重启后历史与 running→failed 恢复。
@@ -161,10 +161,10 @@ app/sidecar/
 
 ```powershell
 # 7 平台矩阵（每平台打开一次可见 Edge，拿到 QR/need_manual 后自动取消）
-& $PY app\sidecar\_real_login_check.py --wait 55
+& $PY tests\tools\_real_login_check.py --wait 55
 
 # 单平台/重试验证（微博最多 3 次尝试）
-& $PY app\sidecar\_real_login_check.py --platforms xhs,wb --wait 60
+& $PY tests\tools\_real_login_check.py --platforms xhs,wb --wait 60
 ```
 
 实测结论（多轮复测后）：
@@ -224,4 +224,4 @@ Invoke-RestMethod -Method Post "$base/api/runs/$runId/resume" -Headers $h -Conte
   `report.failed`（含 no-data）/ `report.cancelled` / 重启中断，通知服务订阅后推送；
 - 离线自测：`test_llm.py`（provider CRUD/脱敏/DPAPI roundtrip、OpenAI+Anthropic 协议、错误分类、
   narrative 提取、情感分批、报告 completed/degraded/修订/事件集成），不联网、不需要真实 Key：
-  `& $PY app\sidecar\test_llm.py`。
+  `& $PY tests\python\test_llm.py`。

@@ -43,7 +43,7 @@
 - `app/sidecar/local_report.py`：本地模板兜底渲染（`narrator` + `render_html` + 内联 Chart.js）；
 - 打包脚本把本目录复制到安装包 `resources/report_pipeline`；
   桌面端通过 `FS_REPORT_PIPELINE_DIR` 或相对路径定位（默认 `<repo>/app/report_pipeline`）。
-- 离线回归：`app/sidecar/test_report_data.py`（数据包/统计）、`app/sidecar/test_llm.py`（模型叙述与降级）。
+- 离线回归：`tests/python/test_report_data.py`（数据包/统计）、`tests/python/test_llm.py`（模型叙述与降级）。
 
 ## 环境
 

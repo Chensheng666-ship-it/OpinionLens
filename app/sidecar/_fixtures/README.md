@@ -1,6 +1,6 @@
 # `_fixtures/` — exporter 测试产物
 
-本目录由 `app/sidecar/test_exporter.py` 自动生成/覆盖，仅用于离线自测与人工检查，**不是运行期数据**。
+本目录由 `tests/python/test_exporter.py` 自动生成/覆盖，仅用于离线自测与人工检查，**不是运行期数据**。
 
 | 文件 | 说明 |
 |---|---|
@@ -23,7 +23,7 @@
 
 ```powershell
 cd <仓库目录>
-& "MediaCrawler\.venv\Scripts\python.exe" app\sidecar\test_exporter.py
+& "MediaCrawler\.venv\Scripts\python.exe" tests\python\test_exporter.py
 ```
 
 测试会额外用真实 `app/data/crawler/media_crawler.db`（若存在）做**只读快照**回归
@@ -31,7 +31,7 @@ cd <仓库目录>
 样例 Excel 不存在时可指定其他文件或走内置合成数据：
 
 ```powershell
-& "MediaCrawler\.venv\Scripts\python.exe" app\sidecar\test_exporter.py --excel D:\data\public_sentiment_sample.xlsx
+& "MediaCrawler\.venv\Scripts\python.exe" tests\python\test_exporter.py --excel D:\data\public_sentiment_sample.xlsx
 ```
 
 > 注意：测试会先删除并重建本目录下的 `out/`，不要在此存放手工文件。

@@ -9,7 +9,7 @@
   - 异常场景仍有 engine.finished（ok:false，退出码 0）
 
 运行：
-    E:\\...\\MediaCrawler\\.venv\\Scripts\\python.exe app/engine/test_engine.py
+    E:\\...\\MediaCrawler\\.venv\\Scripts\\python.exe tests/python/test_engine.py
 """
 
 from __future__ import annotations
@@ -28,9 +28,11 @@ import tempfile
 import traceback
 from pathlib import Path
 
-ENGINE_DIR = Path(__file__).resolve().parent
-if str(ENGINE_DIR) not in sys.path:
-    sys.path.insert(0, str(ENGINE_DIR))
+ROOT = Path(__file__).resolve().parents[2]  # tests/python/x.py -> 仓库根
+ENGINE_DIR = ROOT / "app" / "engine"
+for _path in (ENGINE_DIR,):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 import entry  # noqa: E402
 import patches  # noqa: E402

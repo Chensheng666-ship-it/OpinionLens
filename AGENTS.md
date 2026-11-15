@@ -21,13 +21,16 @@
 
 ## 2. 常用命令（Windows / PowerShell 7）
 
-- 离线自测：`.\app\scripts\selftest.ps1`
+- 离线自测：`.\app\scripts\selftest.ps1`（实现位于 `tests/python/selftest.py`）
 - 开发启动：`.\app\scripts\dev.ps1`
 - 单独启动 sidecar（调试）：`.\app\scripts\run_sidecar.ps1`
 - 打包资源（便携 Python/Node、sidecar、engine、MediaCrawler，报告管线存在时一并打包）：
   `.\app\scripts\build_pack_resources.ps1`
 - 构建安装包：`.\app\scripts\build_installer.ps1 -SkipResources`
 - 完整命令清单见 `docs/常用命令_构建运行自测.md`。
+
+- 测试 / 替身 / 工具脚本在 `tests/`（`python/`、`fixtures/`、`tools/`、`js/`），
+  **不要**再放回 `app/engine/` 或 `app/sidecar/`；新增测试时同步 `tests/README.md` 的清单。
 
 ## 3. 产物与提交
 

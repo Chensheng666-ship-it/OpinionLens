@@ -2,7 +2,7 @@ name: CI
 
 # 离线自测：不联网、不启动真实浏览器、不需要 MediaCrawler 源码。
 # 说明：
-#   - 采集引擎（app/engine/test_engine.py）需要本机安装 MediaCrawler（非商业许可，不随仓库分发），
+#   - 采集引擎（tests/python/test_engine.py）需要本机安装 MediaCrawler（非商业许可，不随仓库分发），
 #     因此 CI 不跑 engine 测试；它在本地用 `scripts/setup_mediacrawler.ps1` 安装后由 selftest 覆盖。
 #   - 其余测试使用 fake engine / fake LLM / fake 通知服务，可在干净环境直接运行。
 
@@ -52,7 +52,7 @@ jobs:
           node-version: "20"
 
       - name: Python compile check
-        run: python -m compileall -q app
+        run: python -m compileall -q app tests
 
       - name: JavaScript syntax check
         shell: pwsh
@@ -68,12 +68,12 @@ jobs:
         shell: pwsh
         run: |
           $tests = @(
-            'app/sidecar/test_notify.py',
-            'app/sidecar/test_llm.py',
-            'app/sidecar/test_account_pool.py',
-            'app/sidecar/test_report_data.py',
-            'app/sidecar/test_exporter.py',
-            'app/sidecar/test_run_manager.py'
+            'tests/python/test_notify.py',
+            'tests/python/test_llm.py',
+            'tests/python/test_account_pool.py',
+            'tests/python/test_report_data.py',
+            'tests/python/test_exporter.py',
+            'tests/python/test_run_manager.py'
           )
           foreach ($t in $tests) {
             Write-Host "=== $t ==="
@@ -82,7 +82,7 @@ jobs:
           }
 
       - name: Sidecar offline selftest
-        run: python app/sidecar/selftest.py
+        run: python tests/python/selftest.py
 
   # ---------------------------------------------------------------------------
   # e2e 冒烟（真实 Electron 窗口 + 主进程 IPC）

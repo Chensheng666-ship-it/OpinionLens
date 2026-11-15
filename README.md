@@ -72,7 +72,7 @@
   支持打开发布页或下载安装包后运行，未签名构建同样可用；
 - **Windows 安装包**：electron-builder 生成 NSIS 安装包（per-user 安装、免管理员、内置便携 Python 运行时）；
 - **离线自测**：engine / exporter / report / sidecar / Electron 截图多组断言，跑 `selftest.ps1` 即可回归；
-- **持续集成**：GitHub Actions 在 Windows 上跑 `compileall` + JS 语法检查 + 5 个离线测试套件 + selftest（[CI 状态](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml)）；
+- **持续集成**：GitHub Actions 在 Windows 上跑 `compileall` + JS 语法检查 + 6 个离线测试套件 + selftest（[CI 状态](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml)）；
 - **可观测性**：结构化事件协议、任务日志落盘、离线自测可复现；
 - **兼容模式**：受限网络/远程桌面/EDR 环境拦截 Chromium 沙箱时自动降级启动。
 
@@ -182,6 +182,11 @@ flowchart LR
 │  ├─ scripts/               #   dev / selftest / build_installer / build_pack_resources
 │  ├─ CONTRACT.md            #   开发契约（事件 / API / 字段）
 │  └─ README.md              #   应用级使用与接口说明
+├─ tests/                    # 测试/替身/工具脚本（不进安装包）
+│  ├─ python/                #   8 个离线测试 + sidecar 全链路 selftest.py
+│  ├─ fixtures/              #   _fake_engine / _fake_exporter / _fake_llm_server 等替身
+│  ├─ tools/                 #   真实网络探针（_real_login_check / probe_platform_qr / diagnose_ks_*）
+│  └─ js/                    #   test_update_logic.js（更新逻辑单测）
 ├─ docs/                     # 构建/命令文档 + 界面截图 + 品牌资源
 ├─ scripts/
 │  └─ setup_mediacrawler.ps1 #   克隆并安装固定 commit 的采集引擎

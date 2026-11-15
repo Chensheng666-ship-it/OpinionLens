@@ -42,6 +42,7 @@ import re
 import shutil
 import sqlite3
 import sys
+from pathlib import Path
 import tempfile
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -52,8 +53,14 @@ try:
 except ImportError:  # pragma: no cover
     raise SystemExit("需要 openpyxl，请使用 MediaCrawler\\.venv\\Scripts\\python.exe")
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+ROOT = Path(__file__).resolve().parents[2]  # tests/python/x.py -> 仓库根
+FIXTURES_DIR = ROOT / "tests" / "fixtures"
+SIDECAR_DIR = ROOT / "app" / "sidecar"
+ENGINE_DIR = ROOT / "app" / "engine"
+for _path in (FIXTURES_DIR, SIDECAR_DIR, ENGINE_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+HERE = str(SIDECAR_DIR)  # 产物仍落 app/sidecar/_fixtures（与拆分前一致）
 
 from exporter import (  # noqa: E402
     EXPORT_SCHEMA_MISMATCH,
@@ -85,8 +92,8 @@ FIXTURE_DIR = os.path.join(HERE, "_fixtures")
 FIXTURE_DB = os.path.join(FIXTURE_DIR, "media_crawler_fixture.db")
 FIXTURE_OUT = os.path.join(FIXTURE_DIR, "out")
 
-# 项目根目录（app/sidecar/../..），用于真实 app/data 库只读回归
-PROJECT_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+# 项目根目录（tests/python/../..），用于真实 app/data 库只读回归
+PROJECT_ROOT = str(ROOT)
 REAL_APP_DB = os.path.join(PROJECT_ROOT, "app", "data", "crawler", "media_crawler.db")
 
 # 用户实测 bug 的 run（2026-11-09 实测）

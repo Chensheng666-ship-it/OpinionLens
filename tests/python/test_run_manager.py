@@ -5,7 +5,7 @@
 stop→cancelled / 续采 attempt 编号 / 无可用账号 / 配额记账 / 失败分类 / 事件契约 + 门面导出。
 
 运行：
-    D:\\OpinionLens\\MediaCrawler\\.venv\\Scripts\\python.exe app\\sidecar\\test_run_manager.py
+    D:\\OpinionLens\\MediaCrawler\\.venv\\Scripts\\python.exe tests\\python\\test_run_manager.py
 """
 
 from __future__ import annotations
@@ -18,9 +18,13 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-SIDECAR_DIR = Path(__file__).resolve().parent
-if str(SIDECAR_DIR) not in sys.path:
-    sys.path.insert(0, str(SIDECAR_DIR))
+ROOT = Path(__file__).resolve().parents[2]  # tests/python/x.py -> 仓库根
+FIXTURES_DIR = ROOT / "tests" / "fixtures"
+SIDECAR_DIR = ROOT / "app" / "sidecar"
+ENGINE_DIR = ROOT / "app" / "engine"
+for _path in (FIXTURES_DIR, SIDECAR_DIR, ENGINE_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 import engine_runner as er  # noqa: E402
 from events import bus  # noqa: E402
@@ -626,10 +630,11 @@ def test_options_forwarding() -> None:
 
 
 def test_config_path_contract() -> None:
-    """路径守卫：分包后 SIDECAR_DIR 必须仍指向 app/sidecar（而不是 runner/）。
+    """路径守卫：SIDECAR_DIR 必须仍指向 app/sidecar；FAKE_ENGINE 入口优先 tests/fixtures。
 
     历史事故：`Path(__file__).parent` 拆分后变成 `app/sidecar/runner`，默认 engine_entry 变成
     `runner/_fake_engine.py`，只有集成自测才会报「引擎入口不存在」。
+    R1 布局调整后，假 engine 已移到 `tests/fixtures/_fake_engine.py`（旧位置保留回退）。
     """
     print("\n--- 13. 配置路径契约（分包后 __file__ 基准） ---")
     from runner import config as config_mod
@@ -643,8 +648,11 @@ def test_config_path_contract() -> None:
         with TempEnv(FAKE_ENGINE="1"):
             cfg_fake = er.SidecarConfig.from_env(data_dir, mc_root=data_dir, python=sys.executable)
         check(
-            "路径: FAKE_ENGINE=1 时默认入口落在 sidecar/_fake_engine.py",
-            cfg_fake.engine_entry.name == "_fake_engine.py" and cfg_fake.engine_entry.parent.name == "sidecar",
+            "路径: FAKE_ENGINE=1 时默认入口优先 tests/fixtures/_fake_engine.py",
+            cfg_fake.engine_entry.name == "_fake_engine.py"
+            and cfg_fake.engine_entry.parent.name == "fixtures"
+            and cfg_fake.engine_entry.parent.parent.name == "tests"
+            and cfg_fake.engine_entry.is_file(),
             str(cfg_fake.engine_entry),
         )
         with TempEnv(FAKE_ENGINE="0"):

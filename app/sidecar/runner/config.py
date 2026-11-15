@@ -177,7 +177,10 @@ class SidecarConfig:
         elif entry_env:
             entry_path = Path(entry_env).expanduser().resolve()
         elif fake_engine:
-            entry_path = (SIDECAR_DIR / "_fake_engine.py").resolve()
+            # 假 engine 替身优先 tests/fixtures（R1 布局）；不存在时回退旧位置（向后兼容旧检出）
+            fixtures_entry = (PROJECT_ROOT / "tests" / "fixtures" / "_fake_engine.py").resolve()
+            legacy_entry = (SIDECAR_DIR / "_fake_engine.py").resolve()
+            entry_path = fixtures_entry if fixtures_entry.is_file() else legacy_entry
         else:
             entry_path = (APP_DIR / "engine" / "entry.py").resolve()
 

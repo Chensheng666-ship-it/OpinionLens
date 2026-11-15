@@ -8,7 +8,7 @@
 输出 JSON + 控制台汇总表，放在 app/data/logs/qr_probe/。
 
 用法：
-  python app/scripts/probe_platform_qr.py [--timeout 35] [--only xhs,wb]
+  python tests/tools/probe_platform_qr.py [--timeout 35] [--only xhs,wb]
 """
 from __future__ import annotations
 
