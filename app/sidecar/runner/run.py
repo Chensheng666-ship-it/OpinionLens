@@ -21,7 +21,8 @@ from events import bus
 from state import StateStore, now_ts
 
 from .config import PLATFORM_LABELS, EngineStartError, ServiceError, SidecarConfig, _to_int
-from .process import EngineProcess, LogSink, read_log_file_page, read_log_file_tail
+from .guard import ActivityGuard
+from .process import EngineRunner, LogSink, read_log_file_page, read_log_file_tail
 
 log = logging.getLogger("sidecar.engine")  # 沿用旧 logger 名：日志输出与拆分前逐字节一致
 
@@ -53,7 +54,7 @@ class RunRuntime:
     account_policy: Dict[str, Any] = field(default_factory=dict)
     resume_accounts: Dict[str, str] = field(default_factory=dict)
     stop_event: threading.Event = field(default_factory=threading.Event)
-    process: Optional[EngineProcess] = None
+    process: Optional[CrawlHandle] = None
     process_lock: threading.RLock = field(default_factory=threading.RLock)
     results_lock: threading.RLock = field(default_factory=threading.RLock)
     platform_results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -1154,7 +1155,8 @@ class FakeProc:
         returncode: int = 0,
         manual: bool = False,
     ) -> None:
-        self.returncode = int(returncode)
+        # CrawlHandle 协议里 returncode 是可选的；FakeProc 恒有值，但类型要按协议写
+        self.returncode: Optional[int] = int(returncode)
         self.events = list(events or [])
         self.on_event = on_event
         # manual=True：一直 running，直到测试/编排层调用 terminate()（模拟长跑进程，用于 stop 用例）

@@ -431,7 +431,7 @@ def validate_report_package(package: Any) -> ReportPackage:
 
     if problems:
         raise ReportPackageInvalid(problems)
-    return package  # type: ignore[return-value]
+    return package
 
 
 # ---------------------------------------------------------------------------

@@ -17,3 +17,9 @@ openpyxl>=3.1
 pandas>=2.0
 jieba>=0.42
 Pillow>=10.0
+
+# 类型检查（只给 CI / 本地 `mypy app/sidecar app/engine` 用，**不影响运行时**；
+# 运行期依赖仍是上面那批 + MediaCrawler 自带依赖）。配置见仓库根 mypy.ini。
+# 版本固定：与本地 `uvx mypy 2.4.1` 对齐——配置开了 warn_unused_ignores，
+# 版本漂移会把「刚好命中的 ignore」变成报错，或让该报的错悄悄消失。
+mypy==2.4.1

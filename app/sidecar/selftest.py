@@ -2613,7 +2613,7 @@ def _check_versions(report: "Report") -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     for _stream in (sys.stdout, sys.stderr):
         try:  # Windows 控制台默认 GBK，统一 UTF-8 防止中文/符号打印异常
-            _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+            _stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:  # noqa: BLE001
             pass
     args = parse_args(argv)

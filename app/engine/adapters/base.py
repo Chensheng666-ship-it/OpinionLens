@@ -373,8 +373,9 @@ def _prepare_user_hash_patch() -> None:
         log.debug("前置导入 tools 失败（由符号探测报告明细）：%s: %s", type(exc).__name__, exc)
         return
     try:
-        user_hash_module.anonymize_user_id = identity_user_id
-        user_hash_module.mask_nickname = identity_nickname
+        # 运行时替换上游 tools.user_hash 的函数（ModuleType 无静态属性声明）
+        user_hash_module.anonymize_user_id = identity_user_id  # type: ignore[attr-defined]  # 原因：运行时 patch 上游 tools.user_hash 的函数（ModuleType 无静态属性声明）
+        user_hash_module.mask_nickname = identity_nickname  # type: ignore[attr-defined]  # 原因：运行时 patch 上游 tools.user_hash 的函数（ModuleType 无静态属性声明）
     except Exception as exc:  # noqa: BLE001 - 不是本次探测目标，留给 patch_user_hash 报错
         log.debug("前置 user_hash patch 失败：%s: %s", type(exc).__name__, exc)
 

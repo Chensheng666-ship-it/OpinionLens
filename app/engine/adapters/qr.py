@@ -738,7 +738,7 @@ async def _switch_weibo_to_desktop_qr_page(page: Any) -> bool:
                     "platform": "Win32",
                 },
             )
-            page._engine_wb_cdp_session = cdp  # type: ignore[attr-defined]
+            page._engine_wb_cdp_session = cdp
             cdp_ok = True
     except Exception as exc:  # noqa: BLE001
         print(f"[engine] 微博 CDP 桌面 UA 覆盖失败（回退 extra headers）：{type(exc).__name__}: {str(exc)[:120]}", flush=True)
@@ -750,7 +750,7 @@ async def _switch_weibo_to_desktop_qr_page(page: Any) -> bool:
             log.debug("设置微博桌面 UA 请求头失败：%s: %s", type(exc).__name__, exc)
     try:
         await page.goto(WEIBO_QR_LOGIN_URL, wait_until="load")  # 走 Page.goto 重试包装
-        page._engine_wb_desktop_qr = True  # type: ignore[attr-defined]
+        page._engine_wb_desktop_qr = True
         await asyncio.sleep(1.5)
         await _prepare_qr_view(page, "wb")
         return True
@@ -774,7 +774,7 @@ async def _switch_tieba_to_passport_qr_page(page: Any) -> bool:
     print("[engine] 贴吧登录页切换到百度 passport 二维码页（修复横幅误判）", flush=True)
     try:
         await page.goto(TIEBA_QR_LOGIN_URL, wait_until="load")  # 走 Page.goto 重试包装
-        page._engine_tieba_passport_qr = True  # type: ignore[attr-defined]
+        page._engine_tieba_passport_qr = True
         await asyncio.sleep(1.5)
         return True
     except Exception as exc:  # noqa: BLE001
@@ -887,7 +887,7 @@ async def _run_qr_rounds(
             await _prepare_qr_view(page, platform)
         elif platform == "tieba":
             # 重载后重新打开 passport 登录页，拿一张新二维码
-            page._engine_tieba_passport_qr = False  # type: ignore[attr-defined]
+            page._engine_tieba_passport_qr = False
             await _switch_tieba_to_passport_qr_page(page)
     if keepalive:
         message = "未能在应用内读取二维码，请直接在已打开的浏览器窗口扫码；登录成功后会自动继续"

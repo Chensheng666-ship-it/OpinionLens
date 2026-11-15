@@ -544,7 +544,8 @@ def _collect_comments(
                 {
                     "id": _text(row.get(id_col)),
                     "author": _comment_author(row),
-                    "text": _clean(row.get(spec.get("text_col")), COMMENT_TEXT_LIMIT),
+                    # 列名来自 export_specs 的规格（dict 形状由契约保证）；缺省时 row.get(None) 返回 None
+                    "text": _clean(row.get(spec.get("text_col")), COMMENT_TEXT_LIMIT),  # type: ignore[arg-type]  # 原因：列名来自 export_specs 的列规格（dict 形状由契约保证），缺省时 row.get(None) 返回 None
                     "likes": _to_int(row.get(like_col)) if like_col and like_col in row else 0,
                     "published_at": _format_datetime(_row_time(row, spec.get("time_cols") or ())),
                     "_sort_ms": sort_ms,

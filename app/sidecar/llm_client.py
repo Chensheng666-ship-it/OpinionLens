@@ -31,13 +31,14 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from secret_store import SecretError, mask_secret, protect, unprotect
+from typing_utils import as_dict, as_list
 
 log = logging.getLogger("sidecar.llm")
 
 try:  # httpx 在 MediaCrawler venv 中已安装；缺失时给出可读错误
-    import httpx  # type: ignore
+    import httpx
 except Exception:  # pragma: no cover - 正常环境必有 httpx
-    httpx = None  # type: ignore
+    httpx = None
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -137,12 +138,12 @@ def mask_base_url(base_url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
-def normalize_base_url(base_url: str) -> str:
+def normalize_base_url(base_url: Any) -> str:
     """去首尾空白与末尾斜杠（不补 /v1，由具体协议端点拼接）。"""
     return str(base_url or "").strip().rstrip("/")
 
 
-def _ensure_http_url(base_url: str) -> str:
+def _ensure_http_url(base_url: Any) -> str:
     value = normalize_base_url(base_url)
     if not value:
         return ""
@@ -340,7 +341,7 @@ def _narrative_user_payload(
     instruction: str = "",
     previous_narrative: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    report = package.get("report") if isinstance(package.get("report"), dict) else {}
+    report = as_dict(package.get("report"))
     payload: Dict[str, Any] = {
         "report_meta": {
             "brand": report.get("brand", ""),
@@ -431,7 +432,7 @@ def _normalize_narrative(
     if not isinstance(risk.get("assessment"), str):
         risk["assessment"] = ""
     doc["suggestions"] = [
-        item.strip() for item in suggestions if isinstance(item, str) and item.strip()
+        item.strip() for item in as_list(suggestions) if isinstance(item, str) and item.strip()
     ][:8]
     if not isinstance(doc.get("suggestions_note"), str):
         doc["suggestions_note"] = "以上建议由模型基于统计结果生成，请结合业务实际调整执行优先级。"
@@ -1092,8 +1093,8 @@ class LLMService:
                 "模型响应缺少 choices（请确认 base_url 指向 OpenAI 兼容 /chat/completions 接口）",
                 code=CODE_BAD_RESPONSE,
             )
-        first = choices[0] if isinstance(choices[0], dict) else {}
-        message = first.get("message") if isinstance(first.get("message"), dict) else {}
+        first = as_dict(choices[0] if choices else None)
+        message = as_dict(first.get("message"))
         content = message.get("content")
         if isinstance(content, list):  # 部分网关返回 content parts
             content = "".join(

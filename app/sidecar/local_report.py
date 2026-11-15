@@ -16,6 +16,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from typing_utils import as_dict, as_list
+
 LOCAL_TEMPLATE_VERSION = "local-template@v1"
 LOCAL_NARRATIVE_GENERATED_BY = "local-template"
 DEFAULT_TITLE = "舆情监测周报"
@@ -60,7 +62,7 @@ def _fmt_int(value: Any) -> str:
 
 
 def _sentiment_summary(stats: Dict[str, Any]) -> List[Dict[str, Any]]:
-    sentiment = stats.get("sentiment") if isinstance(stats.get("sentiment"), dict) else {}
+    sentiment = as_dict(stats.get("sentiment"))
     rows: List[Dict[str, Any]] = []
     for key, label in (("positive", "正面"), ("neutral", "中性"), ("negative", "负面")):
         item = sentiment.get(key)
@@ -120,12 +122,12 @@ def _pct_text(value: Any) -> str:
 
 def _narrative_comment_facts(stats: Dict[str, Any]) -> Dict[str, Any]:
     """风险等级与第四章「重点负面事件」口径对齐所需事实（评论负面情况）。"""
-    risk = stats.get("risk") if isinstance(stats.get("risk"), dict) else {}
-    sentiment = stats.get("sentiment") if isinstance(stats.get("sentiment"), dict) else {}
-    comment_block = sentiment.get("comments") if isinstance(sentiment.get("comments"), dict) else {}
-    comment_negative = comment_block.get("negative") if isinstance(comment_block.get("negative"), dict) else {}
-    overall_block = sentiment.get("overall") if isinstance(sentiment.get("overall"), dict) else {}
-    overall_negative = overall_block.get("negative") if isinstance(overall_block.get("negative"), dict) else {}
+    risk = as_dict(stats.get("risk"))
+    sentiment = as_dict(stats.get("sentiment"))
+    comment_block = as_dict(sentiment.get("comments"))
+    comment_negative = as_dict(comment_block.get("negative"))
+    overall_block = as_dict(sentiment.get("overall"))
+    overall_negative = as_dict(overall_block.get("negative"))
     return {
         "level": str(risk.get("level") or ""),
         "level_code": str(risk.get("level_code") or ""),
@@ -146,11 +148,11 @@ def reconcile_narrative(stats: Dict[str, Any], narrative: Optional[Dict[str, Any
     if not isinstance(narrative, dict):
         return {}
     stats = stats if isinstance(stats, dict) else {}
-    events = stats.get("negative_events") if isinstance(stats.get("negative_events"), list) else []
+    events = as_list(stats.get("negative_events"))
     facts = _narrative_comment_facts(stats)
     if events or facts["level_code"] not in ("medium", "high") or facts["negative_comments"] <= 0:
         return narrative
-    negative = narrative.get("negative") if isinstance(narrative.get("negative"), dict) else {}
+    negative = as_dict(narrative.get("negative"))
     negative = dict(negative)
     intro = (
         f"本期未识别到负面内容帖；但评论区存在 {facts['negative_comments']} 条负面评论"
@@ -185,13 +187,13 @@ def _builtin_html(
     instruction: str,
     version: int,
 ) -> str:
-    report = package.get("report") if isinstance(package.get("report"), dict) else {}
-    window = report.get("window") if isinstance(report.get("window"), dict) else {}
+    report = as_dict(package.get("report"))
+    window = as_dict(report.get("window"))
     window_start = str(window.get("start") or "")
     window_end = str(window.get("end") or "")
     keywords = [str(item) for item in (report.get("keywords") or []) if str(item).strip()]
     platforms = [str(item) for item in (report.get("platforms") or []) if str(item).strip()]
-    counts = package.get("counts") if isinstance(package.get("counts"), dict) else {}
+    counts = as_dict(package.get("counts"))
     content = counts.get("content", 0)
     comments = counts.get("comments", 0)
     total = counts.get("total", content + comments)
@@ -289,8 +291,8 @@ def render_local_report(
     - POC 不可用/渲染异常 → 内置极简模板（永远成功）。
     """
     package = package if isinstance(package, dict) else {}
-    stats = package.get("stats") if isinstance(package.get("stats"), dict) else {}
-    report = package.get("report") if isinstance(package.get("report"), dict) else {}
+    stats = as_dict(package.get("stats"))
+    report = as_dict(package.get("report"))
     resolved_title = (
         str(title or "").strip()
         or str(report.get("title") or "").strip()
@@ -308,8 +310,8 @@ def render_local_report(
             pipeline_str = str(pipeline_dir)
             if pipeline_str not in sys.path:
                 sys.path.insert(0, pipeline_str)
-            from narrator import build_local_narrative  # type: ignore
-            from render_html import TEMPLATE_VERSION, render_report  # type: ignore
+            from narrator import build_local_narrative
+            from render_html import TEMPLATE_VERSION, render_report
 
             narrative_data = dict(narrative) if isinstance(narrative, dict) else build_local_narrative(stats)
             if instruction:

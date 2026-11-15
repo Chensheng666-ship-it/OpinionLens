@@ -24,7 +24,7 @@ import threading
 import time
 import types
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 import adapters
 from adapters.base import (
@@ -433,7 +433,8 @@ def import_mediacrawler(
     #    通过 `from tools.user_hash import anonymize_user_id` 绑定函数 -> 必须已 patch）
     config = importlib.import_module("config")
     if light and platform in CRAWLER_CLASSES:
-        mc_main = types.SimpleNamespace(CrawlerFactory=_light_crawler_factory(platform))
+        # 轻量模式用 SimpleNamespace 顶替 main 模块（只带 CrawlerFactory），完整模式是真模块
+        mc_main: Any = types.SimpleNamespace(CrawlerFactory=_light_crawler_factory(platform))
         print(
             f"[engine] 轻量导入模式：只加载 {platform} 平台类（跳过其它平台 import）",
             flush=True,
@@ -628,7 +629,7 @@ async def probe_login_state(
                 import inspect
 
                 try:
-                    parameters = inspect.signature(client.pong).parameters
+                    parameters: Mapping[str, Any] = inspect.signature(client.pong).parameters
                 except (TypeError, ValueError):
                     parameters = {}
                 if "browser_context" in parameters:

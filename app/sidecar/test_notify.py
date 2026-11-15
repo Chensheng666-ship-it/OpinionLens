@@ -1228,7 +1228,7 @@ def run(report: Optional[Any] = None) -> Tuple[int, int]:
         stream = getattr(sys, stream_name, None)
         if hasattr(stream, "reconfigure"):
             try:
-                stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+                stream.reconfigure(encoding="utf-8", errors="replace")
             except Exception:  # noqa: BLE001 - 非标准流时忽略
                 pass
     print("=" * 80)

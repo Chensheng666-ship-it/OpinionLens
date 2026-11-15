@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from typing_utils import as_list
+
 from fastapi import APIRouter, Request
 
 from engine_runner import ServiceError
@@ -53,7 +55,7 @@ def _event_type_catalog() -> List[Dict[str, Any]]:
 
 def _test_summary(result: Dict[str, Any]) -> Dict[str, Any]:
     """把多通道测试结果整理成单通道同构结构（顶层也带 ok/latency_ms/http_status/error）。"""
-    items = result.get("results") if isinstance(result.get("results"), list) else []
+    items = as_list(result.get("results"))
     latencies = [int(item.get("latency_ms") or 0) for item in items]
     statuses = [item.get("http_status") for item in items if item.get("http_status") is not None]
     errors = [str(item.get("error") or "") for item in items if item.get("error")]

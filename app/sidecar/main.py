@@ -214,7 +214,7 @@ def _open_path(path: Path) -> None:
         log.info("SIDECAR_DISABLE_OPEN=1，跳过实际打开：%s", path)
         return
     if os.name == "nt":
-        os.startfile(str(path))  # type: ignore[attr-defined]
+        os.startfile(str(path))
         return
     if sys.platform == "darwin":
         subprocess.Popen(["open", str(path)])
@@ -303,7 +303,7 @@ def create_app(cfg: SidecarConfig, token: str) -> FastAPI:
 
     # ---- 鉴权中间件（先注册，CORS 后注册 → CORS 在最外层，401 也带 CORS 头）
     @app.middleware("http")
-    async def auth_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+    async def auth_middleware(request: Request, call_next):
         path = request.url.path
         if request.method == "OPTIONS" or path == "/health" or not path.startswith("/api"):
             return await call_next(request)
@@ -331,11 +331,11 @@ def create_app(cfg: SidecarConfig, token: str) -> FastAPI:
 
     # ---- 统一错误体 ----
     @app.exception_handler(ServiceError)
-    async def service_error_handler(_request: Request, exc: ServiceError):  # type: ignore[no-untyped-def]
+    async def service_error_handler(_request: Request, exc: ServiceError):
         return _error_response(exc.status_code, exc.code, exc.message)
 
     @app.exception_handler(RequestValidationError)
-    async def validation_error_handler(_request: Request, exc: RequestValidationError):  # type: ignore[no-untyped-def]
+    async def validation_error_handler(_request: Request, exc: RequestValidationError):
         errors = exc.errors() or []
         first = errors[0] if errors else {}
         loc = ".".join(str(item) for item in (first.get("loc") or []) if item != "body")
@@ -343,7 +343,7 @@ def create_app(cfg: SidecarConfig, token: str) -> FastAPI:
         return _error_response(422, "INVALID_PARAMS", message)
 
     @app.exception_handler(StarletteHTTPException)
-    async def http_error_handler(_request: Request, exc: StarletteHTTPException):  # type: ignore[no-untyped-def]
+    async def http_error_handler(_request: Request, exc: StarletteHTTPException):
         detail = exc.detail
         if isinstance(detail, dict) and "code" in detail and "message" in detail:
             return _error_response(int(exc.status_code), str(detail["code"]), str(detail["message"]))
@@ -351,7 +351,7 @@ def create_app(cfg: SidecarConfig, token: str) -> FastAPI:
         return _error_response(int(exc.status_code), code, str(detail))
 
     @app.exception_handler(Exception)
-    async def unhandled_error_handler(request: Request, exc: Exception):  # type: ignore[no-untyped-def]
+    async def unhandled_error_handler(request: Request, exc: Exception):
         log.exception("未处理异常：%s %s", request.method, request.url.path)
         return _error_response(500, "INTERNAL", f"服务内部错误：{exc}")
 
@@ -552,12 +552,12 @@ def create_app(cfg: SidecarConfig, token: str) -> FastAPI:
 class SidecarServer(uvicorn.Server):
     """在 socket 真正绑定成功后回调 ``on_ready(port)``，保证 ready 行里是真实端口。"""
 
-    def __init__(self, config: uvicorn.Config, on_ready) -> None:  # type: ignore[no-untyped-def]
+    def __init__(self, config: uvicorn.Config, on_ready) -> None:
         super().__init__(config)
         self._on_ready = on_ready
         self._ready_reported = False
 
-    async def startup(self, sockets=None) -> None:  # type: ignore[no-untyped-def]
+    async def startup(self, sockets=None) -> None:
         await super().startup(sockets=sockets)
         if not self.started or self._ready_reported:
             return
@@ -601,7 +601,8 @@ def _reconfigure_stdio() -> None:
     """Windows 控制台默认 GBK：统一改为 UTF-8，避免中文日志 UnicodeEncodeError。"""
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+            # sys.stdout/stderr 的静态类型是 TextIO（没有 reconfigure）；非标准流由 except 兜底
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]  # 原因：sys.stdout/stderr 静态类型 TextIO 没有 reconfigure，非标准流由 except 兜底
         except Exception:  # noqa: BLE001 - 非标准流（如被重定向为 BytesIO）时忽略
             pass
 
@@ -626,7 +627,7 @@ def setup_logging(cfg: SidecarConfig, level: str = "INFO") -> None:
     # uvicorn 自身日志压到 WARNING，避免 ready 行前后噪音；访问日志关闭
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
-    root._sidecar_configured = True  # type: ignore[attr-defined]
+    root._sidecar_configured = True  # type: ignore[attr-defined]  # 原因：给 logging root 挂去重标记（Logger 无该属性声明）
 
 
 def main(argv: Optional[List[str]] = None) -> int:

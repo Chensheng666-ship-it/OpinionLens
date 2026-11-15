@@ -43,7 +43,7 @@ def install_initial_page_reuse_patch() -> bool:
         return False
     original_new_page = BrowserContext.new_page
 
-    async def _new_page_or_reuse_blank(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+    async def _new_page_or_reuse_blank(self, *args, **kwargs):
         try:
             pages = list(self.pages)
         except Exception as exc:  # noqa: BLE001 - 上下文已关闭：退回原生 new_page
@@ -57,12 +57,12 @@ def install_initial_page_reuse_patch() -> bool:
                 log.debug("读取 page.url 判断空白页失败：%s: %s", type(exc).__name__, exc)
                 is_blank = False
             if is_blank and not getattr(page, "_engine_reused_blank_page", False):
-                page._engine_reused_blank_page = True  # type: ignore[attr-defined]
+                page._engine_reused_blank_page = True
                 print("[engine] 复用持久化上下文初始空白页，避免登录多开页面", flush=True)
                 return page
         return await original_new_page(self, *args, **kwargs)
 
-    BrowserContext.new_page = _new_page_or_reuse_blank  # type: ignore[assignment]
+    BrowserContext.new_page = _new_page_or_reuse_blank
     _INITIAL_PAGE_REUSE_PATCH["installed"] = True
     return True
 
@@ -97,11 +97,11 @@ def patch_browser_channel(channel: Optional[str] = None) -> Dict[str, Any]:
         _BROWSER_PATCH["orig_launch_persistent_context"] = BrowserType.launch_persistent_context
         _BROWSER_PATCH["orig_launch"] = BrowserType.launch
 
-    async def _launch_persistent_context(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+    async def _launch_persistent_context(self, *args, **kwargs):
         kwargs["channel"] = channel
         return await _BROWSER_PATCH["orig_launch_persistent_context"](self, *args, **kwargs)
 
-    async def _launch(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+    async def _launch(self, *args, **kwargs):
         kwargs["channel"] = channel
         return await _BROWSER_PATCH["orig_launch"](self, *args, **kwargs)
 
@@ -149,7 +149,7 @@ def install_goto_retry(emitter: Optional[EventEmitter] = None, attempts: int = 5
 
     _PAGE_GOTO_PATCH.update(installed=True, attempts=int(attempts), original=Page.goto)
 
-    async def _goto_with_retry(self, url, *args, **kwargs):  # type: ignore[no-untyped-def]
+    async def _goto_with_retry(self, url, *args, **kwargs):
         import asyncio
 
         # 每次调用现取当前会话的 emitter：同进程重跑时不会把 progress 发到上一次的 emitter
@@ -198,7 +198,7 @@ def install_goto_retry(emitter: Optional[EventEmitter] = None, attempts: int = 5
             raise last_exc
         return None
 
-    Page.goto = _goto_with_retry  # type: ignore[assignment]
+    Page.goto = _goto_with_retry
     return {"installed": True, "attempts": int(attempts)}
 
 # --------------------------------------------------------------------------------------

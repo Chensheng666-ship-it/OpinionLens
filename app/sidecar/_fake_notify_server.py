@@ -263,23 +263,23 @@ class FakeSMTPRecorder:
                 self.close()
                 return False
 
-        smtplib.SMTP_SSL = _FakeClient  # type: ignore[assignment]
-        smtplib.SMTP = _FakeClient  # type: ignore[assignment]
-        notify_channels.smtplib.SMTP_SSL = _FakeClient  # type: ignore[attr-defined]
-        notify_channels.smtplib.SMTP = _FakeClient  # type: ignore[attr-defined]
+        smtplib.SMTP_SSL = _FakeClient  # type: ignore[assignment]  # 原因：假 SMTP 客户端替换（测试专用 monkeypatch，运行期替换标准库/通道模块属性）
+        smtplib.SMTP = _FakeClient  # type: ignore[assignment]  # 原因：假 SMTP 客户端替换（测试专用 monkeypatch，运行期替换标准库/通道模块属性）
+        notify_channels.smtplib.SMTP_SSL = _FakeClient  # type: ignore[attr-defined]  # 原因：假 SMTP 客户端替换（测试专用 monkeypatch，运行期替换标准库/通道模块属性）
+        notify_channels.smtplib.SMTP = _FakeClient  # type: ignore[attr-defined]  # 原因：假 SMTP 客户端替换（测试专用 monkeypatch，运行期替换标准库/通道模块属性）
         self._installed = True
         return self
 
     def uninstall(self) -> None:
         if not self._installed:
             return
-        smtplib.SMTP = self._original_smtp  # type: ignore[assignment]
-        smtplib.SMTP_SSL = self._original_smtp_ssl  # type: ignore[assignment]
+        smtplib.SMTP = self._original_smtp  # type: ignore[assignment]  # 原因：假 SMTP 客户端替换（测试专用 monkeypatch，运行期替换标准库/通道模块属性）
+        smtplib.SMTP_SSL = self._original_smtp_ssl  # type: ignore[assignment]  # 原因：假 SMTP 客户端替换（测试专用 monkeypatch，运行期替换标准库/通道模块属性）
         try:
             import notify_channels
 
-            notify_channels.smtplib.SMTP = self._original_smtp  # type: ignore[attr-defined]
-            notify_channels.smtplib.SMTP_SSL = self._original_smtp_ssl  # type: ignore[attr-defined]
+            notify_channels.smtplib.SMTP = self._original_smtp  # type: ignore[attr-defined]  # 原因：假 SMTP 客户端替换（测试专用 monkeypatch，运行期替换标准库/通道模块属性）
+            notify_channels.smtplib.SMTP_SSL = self._original_smtp_ssl  # type: ignore[attr-defined]  # 原因：假 SMTP 客户端替换（测试专用 monkeypatch，运行期替换标准库/通道模块属性）
         except Exception:  # noqa: BLE001
             pass
         self._installed = False

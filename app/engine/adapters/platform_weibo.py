@@ -68,13 +68,13 @@ def patch_weibo_comment_empty() -> bool:
     utils_mod = getattr(client_mod, "utils", None)
     data_fetch_error = getattr(client_mod, "DataFetchError", Exception)
 
-    async def _request_with_empty_comment_handling(self, method, url, **kwargs):  # type: ignore[no-untyped-def]
+    async def _request_with_empty_comment_handling(self, method, url, **kwargs):
         if "/comments/hotflow" not in str(url):
             return await original_request(self, method, url, **kwargs)
         logger = getattr(utils_mod, "logger", None) if utils_mod is not None else None
         original_error = getattr(logger, "error", None) if logger is not None else None
 
-        def _filtered_error(message, *args, **kw):  # type: ignore[no-untyped-def]
+        def _filtered_error(message, *args, **kw):
             # 抑制「还没有人评论」这类正常业务响应，不污染采集日志
             if _is_weibo_no_comment_message(str(message)):
                 return
@@ -85,7 +85,7 @@ def patch_weibo_comment_empty() -> bool:
             logger.error = _filtered_error
         try:
             return await base_request(self, method, url, **kwargs)
-        except data_fetch_error as exc:  # type: ignore[misc]
+        except data_fetch_error as exc:
             if _is_weibo_no_comment_message(str(exc)):
                 print(
                     f"[engine] 微博评论为空（{str(exc)[:80]}），按 0 条处理（不重试、不报错）",
@@ -97,8 +97,8 @@ def patch_weibo_comment_empty() -> bool:
             if logger is not None and original_error is not None:
                 logger.error = original_error
 
-    client_cls.request = _request_with_empty_comment_handling  # type: ignore[assignment]
-    client_cls._engine_wb_comment_empty_patched = True  # type: ignore[attr-defined]
+    client_cls.request = _request_with_empty_comment_handling
+    client_cls._engine_wb_comment_empty_patched = True
     _WEIBO_COMMENT_EMPTY_PATCH["installed"] = True
     print("[engine] 已安装微博空评论补丁（无评论不再 ERROR/重试）", flush=True)
     return True

@@ -28,7 +28,7 @@ from .config import (
 )
 from .guard import BUSY_GLOBAL_MESSAGE, BUSY_PLATFORM_TEST_MESSAGE, ActivityGuard
 from .login import LoginManager
-from .process import EngineRunner, LogSink
+from .process import EngineProcess, EngineRunner, LogSink
 from .run import RUN_STATUS_RUNNING, EngineProcessBackend, RunManager
 
 log = logging.getLogger("sidecar.engine")  # 沿用旧 logger 名：日志输出与拆分前逐字节一致

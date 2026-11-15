@@ -270,7 +270,7 @@ def _qr_file_meta(path: str) -> Dict[str, Any]:
         pass
     # cv2 解码：与 engine 的“可解码”校验口径一致（补白边后 decode；未安装 cv2 时跳过）
     try:
-        import cv2  # type: ignore
+        import cv2  # type: ignore[import-not-found]  # 原因：cv2 在检查环境无 stub；探针运行期从 venv 导入
 
         image = cv2.imread(str(file_path))
         if image is not None:

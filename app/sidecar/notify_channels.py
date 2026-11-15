@@ -43,6 +43,8 @@ from email.message import EmailMessage
 from email.utils import formataddr
 from typing import Any, Dict, List, Optional, Tuple
 
+from typing_utils import as_dict
+
 log = logging.getLogger("sidecar.notify.channels")
 
 BRAND = "舆见 OpinionLens"
@@ -291,7 +293,7 @@ def _bark_host(config: Dict[str, Any]) -> str:
     return str(config.get("host") or "").strip()
 
 
-def _validate_host(host: str, field_label: str = "host") -> str:
+def _validate_host(host: Any, field_label: str = "host") -> str:
     text = str(host or "").strip()
     if not text:
         raise ChannelConfigError(f"{field_label} 不能为空")
@@ -377,7 +379,7 @@ def validate_config(
         raise ChannelConfigError(
             "不支持的通道类型：%s（可选：%s）" % (ctype or "(空)", "、".join(CHANNEL_TYPES))
         )
-    source = dict(config or {}) if isinstance(config, dict) else {}
+    source = dict(as_dict(config or {}))
     raw_secret = str(secret) if secret is not None else ""
     tm = test_mode(test_mode_)
 
@@ -488,7 +490,7 @@ def resolve_endpoint(
 ) -> str:
     """构造并校验最终出站 URL（内置通道 host 由白名单固定；测试模式走 fake base）。"""
     ctype = str(channel_type or "").strip().lower()
-    source = dict(config or {}) if isinstance(config, dict) else {}
+    source = dict(as_dict(config or {}))
     tm = test_mode(test_mode_)
     key = _extract_secret(secret, ctype)
     if ctype == "wecom_bot":
@@ -533,7 +535,7 @@ def safe_endpoint(
 ) -> str:
     """日志用端点描述：只保留 scheme + host + 路径模板（不含 query/密钥）。"""
     ctype = str(channel_type or "").strip().lower()
-    source = dict(config or {}) if isinstance(config, dict) else {}
+    source = dict(as_dict(config or {}))
     tm = test_mode(test_mode_)
     try:
         if ctype == "smtp":
@@ -766,9 +768,9 @@ def send(
     :return: :class:`SendResult`
     """
     started = time.perf_counter()
-    spec = channel if isinstance(channel, dict) else {}
+    spec = as_dict(channel)
     ctype = str(spec.get("type") or "").strip().lower()
-    config = spec.get("config") if isinstance(spec.get("config"), dict) else {}
+    config = as_dict(spec.get("config"))
     secret = str(spec.get("secret") or "")
     tm = test_mode(test_mode_)
     timeout_value = DEFAULT_TIMEOUT

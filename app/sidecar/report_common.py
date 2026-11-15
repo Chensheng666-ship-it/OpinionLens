@@ -173,8 +173,8 @@ def load_poc_modules() -> Dict[str, Any]:
         )
     if poc_dir not in sys.path:
         sys.path.insert(0, poc_dir)
-    import excel_loader  # type: ignore  # noqa: PLC0415
-    import compute_stats  # type: ignore  # noqa: PLC0415
+    import excel_loader  # noqa: PLC0415
+    import compute_stats  # noqa: PLC0415
 
     # POC 原始平台列表只有 6 个（无贴吧）；在“报告数据层”把贴吧补进其模块级常量，
     # 使 totals/platform_ranking/trend/sentiment.by_platform 覆盖 7 平台。

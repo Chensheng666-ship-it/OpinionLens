@@ -148,7 +148,7 @@ def configure_event_loop() -> None:
     if sys.platform != "win32":
         return
     try:
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     except Exception:
         pass
 
@@ -156,7 +156,7 @@ def configure_event_loop() -> None:
 def _install_signal_handlers() -> None:
     """尽力而为的取消：侧车在 Windows 上多用 TerminateProcess（不可捕获），此处主要覆盖 Ctrl+C/SIGTERM。"""
 
-    def _raise_keyboard_interrupt(signum, _frame):  # type: ignore[no-untyped-def]
+    def _raise_keyboard_interrupt(signum, _frame):
         raise KeyboardInterrupt(f"signal {signum}")
 
     for sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):

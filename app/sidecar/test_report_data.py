@@ -285,7 +285,7 @@ def _stats_schema_errors(stats: Dict[str, Any]) -> List[str]:
     poc = load_poc_modules()
     if poc["poc_dir"] not in sys.path:
         sys.path.insert(0, poc["poc_dir"])
-    import schema_validator  # type: ignore  # noqa: PLC0415
+    import schema_validator  # noqa: PLC0415
 
     schema_path = os.path.join(poc["poc_dir"], "stats.schema.json")
     with open(schema_path, "r", encoding="utf-8") as fh:

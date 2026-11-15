@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from typing_utils import as_list
+
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
@@ -144,7 +146,7 @@ def batch_test_pool_accounts(
     """批量检测（服务端串行；UI 可自行并发 2 个）。缺省=全部未归档账号。"""
     service = _service(request)
     manager = _accounts(request)
-    wanted = [str(item) for item in (payload.account_ids if payload else None or [])]
+    wanted = [str(item) for item in (as_list(payload.account_ids) if payload else [])]
     accounts = manager.list(include_archived=False)
     if wanted:
         wanted_set = set(wanted)

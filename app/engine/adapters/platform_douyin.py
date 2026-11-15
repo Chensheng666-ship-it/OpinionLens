@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, List
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from adapters.base import UpstreamSymbol, register_contract, require_patch
 from adapters.login import _login_class
 from adapters.session import ensure_session, remember_originals, restore_originals
+
+if TYPE_CHECKING:
+    # 仅注解使用（patches.EventEmitter 在运行期由 patches.py 注入，避免循环 import）
+    from patches import EventEmitter
 
 log = logging.getLogger("engine.adapters.platform_douyin")
 
@@ -128,7 +132,7 @@ def patch_douyin_login_dialog(mc: Dict[str, Any], emitter: Optional[EventEmitter
         restore_originals(cls, ("popup_login_dialog",))
         if not callable(getattr(cls, "popup_login_dialog", None)):
             raise AttributeError(f"{cls.__name__} 缺少 popup_login_dialog()")
-        cls.popup_login_dialog = _robust_douyin_popup_login_dialog  # type: ignore[assignment]
+        cls.popup_login_dialog = _robust_douyin_popup_login_dialog
         cls._engine_dy_popup_patched = True  # 兼容旧标记（跨模块可读）
     except Exception as exc:  # noqa: BLE001 - 登录面板是登录必需能力
         require_patch("dy", "patch_douyin_login_dialog", exc, emitter=emitter)

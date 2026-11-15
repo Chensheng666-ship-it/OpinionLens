@@ -11,12 +11,22 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from state import now_ts
+from state import StateStore, now_ts
 
-from .config import DEFAULT_LOGIN_TIMEOUT, EngineStartError, ServiceError
-from .process import EngineProcess, LogSink, default_need_manual_message, infer_need_manual_kind
+from .config import DEFAULT_LOGIN_TIMEOUT, EngineStartError, ServiceError, SidecarConfig
+from .process import (
+    EngineProcess,
+    EngineRunner,
+    LogSink,
+    default_need_manual_message,
+    infer_need_manual_kind,
+)
+
+if TYPE_CHECKING:
+    # 仅用于 __init__ 的注解：guard 是叶子模块，运行期不引入新的依赖边
+    from .guard import ActivityGuard
 
 log = logging.getLogger("sidecar.engine")  # 沿用旧 logger 名：日志输出与拆分前逐字节一致
 

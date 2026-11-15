@@ -255,10 +255,10 @@ def instrument_login_class(
         return await original_begin(self, *args, **kwargs)
 
     # 包装层数标记：自测用它断言"只包装一次"（重复安装 → 2）
-    _wrapped_check.__engine_wrap_count__ = 1 + int(  # type: ignore[attr-defined]
+    _wrapped_check.__engine_wrap_count__ = 1 + int(  # type: ignore[attr-defined]  # 原因：给包装后的登录函数挂计数标记（Callable 无该属性声明）
         getattr(original_check, "__engine_wrap_count__", 0) or 0
     )
-    _wrapped_begin.__engine_wrap_count__ = 1 + int(  # type: ignore[attr-defined]
+    _wrapped_begin.__engine_wrap_count__ = 1 + int(  # type: ignore[attr-defined]  # 原因：给包装后的登录函数挂计数标记（Callable 无该属性声明）
         getattr(original_begin, "__engine_wrap_count__", 0) or 0
     )
 

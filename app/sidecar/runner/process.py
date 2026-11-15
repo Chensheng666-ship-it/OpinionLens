@@ -15,7 +15,7 @@ import time
 import itertools
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, TextIO, Tuple
 
 from state import now_ts
 
@@ -224,6 +224,8 @@ class LogSink:
         self._lines: Deque[Dict[str, Any]] = deque(maxlen=self._maxlen)
         self._total = 0
         self._closed = False
+        # 落盘失败（_fh=None）时只保留内存日志，所以类型上必须显式允许 None
+        self._fh: Optional[TextIO] = None
         try:
             self._fh = open(self.path, "a", encoding="utf-8", errors="replace", buffering=1)
         except OSError:  # 落盘失败时仍保留内存日志
@@ -307,7 +309,7 @@ def read_log_file_page(
     """
     count_int = max(1, min(int(count or 200), LOG_TAIL_MAX))
     is_tail = after_line is None
-    lower = 0 if is_tail else max(0, int(after_line) + 1)
+    lower = 0 if after_line is None else max(0, int(after_line) + 1)
     keep: Deque[str] = deque(maxlen=count_int)
     fresh: List[str] = []
     total = 0
@@ -418,7 +420,7 @@ class EngineProcess:
             self.sink.append(f"[sidecar] 读取引擎输出异常：{exc}")
         finally:
             try:
-                proc.stdout.close()  # type: ignore[union-attr]
+                proc.stdout.close()
             except Exception:  # noqa: BLE001
                 pass
             try:

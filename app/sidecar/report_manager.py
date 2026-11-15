@@ -40,6 +40,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from typing_utils import as_dict
+
 from engine_runner import PLATFORM_LABELS, ServiceError, SidecarConfig
 from events import bus
 from llm_client import (
@@ -173,7 +175,7 @@ def _parse_date_value(value: Any, default: date) -> date:
 # 事件发布（契约 §2.1：报告终态 → 通知服务）
 # ---------------------------------------------------------------------------
 def _report_event_data(task: Dict[str, Any], *, message: str = "", error: str = "") -> Dict[str, Any]:
-    counts = task.get("counts") if isinstance(task.get("counts"), dict) else {}
+    counts = as_dict(task.get("counts"))
     try:
         total_items = int(counts.get("total") or 0)
     except (TypeError, ValueError):
@@ -717,7 +719,7 @@ class ReportManager:
             raise ServiceError("REPORT_DATA_FAILED", "报告数据包为空或格式错误", 500)
         if self._is_report_cancelled(report_id):
             return
-        package_report = package.get("report") if isinstance(package.get("report"), dict) else {}
+        package_report = as_dict(package.get("report"))
         title = str(package_report.get("title") or "").strip() or _default_title(task)
         self._save_package_assets(report_id, package)
         self._update(
@@ -725,7 +727,7 @@ class ReportManager:
             stage="probing",
             progress=6,
             title=title,
-            counts=(package.get("counts") if isinstance(package.get("counts"), dict) else {}),
+            counts=as_dict(package.get("counts")),
             stats_fingerprint=str((package.get("meta") or {}).get("stats_fingerprint") or ""),
             package_schema_version=str(package.get("schema_version") or ""),
         )
@@ -735,7 +737,7 @@ class ReportManager:
             time.monotonic() - started,
             (package.get("counts") or {}).get("total"),
         )
-        counts = package.get("counts") if isinstance(package.get("counts"), dict) else {}
+        counts = as_dict(package.get("counts"))
         try:
             total_items = int(counts.get("total") or 0)
         except (TypeError, ValueError):
@@ -777,11 +779,7 @@ class ReportManager:
         try:
             response = self.ai.generate_narrative(package)
             narrative = response.get("narrative") if isinstance(response, dict) else None
-            meta = (
-                response.get("meta")
-                if isinstance(response, dict) and isinstance(response.get("meta"), dict)
-                else {}
-            )
+            meta = as_dict(response.get("meta") if isinstance(response, dict) else None)
             if not isinstance(narrative, dict) or not narrative:
                 raise LLMError("模型返回的 narrative 为空", code="LLM_BAD_NARRATIVE")
             generated_by = str(meta.get("generated_by") or "local-llm")
@@ -854,11 +852,7 @@ class ReportManager:
                 previous_narrative=previous,
             )
             narrative = response.get("narrative") if isinstance(response, dict) else None
-            meta = (
-                response.get("meta")
-                if isinstance(response, dict) and isinstance(response.get("meta"), dict)
-                else {}
-            )
+            meta = as_dict(response.get("meta") if isinstance(response, dict) else None)
             if not isinstance(narrative, dict) or not narrative:
                 raise LLMError("模型返回的 narrative 为空", code="LLM_BAD_NARRATIVE")
             if self._is_report_cancelled(report_id):
@@ -1027,7 +1021,7 @@ class ReportManager:
             (directory / "package.json").write_text(
                 json.dumps(package, ensure_ascii=False), encoding="utf-8"
             )
-            stats = package.get("stats") if isinstance(package.get("stats"), dict) else {}
+            stats = as_dict(package.get("stats"))
             (directory / "stats.json").write_text(
                 json.dumps(stats, ensure_ascii=False), encoding="utf-8"
             )

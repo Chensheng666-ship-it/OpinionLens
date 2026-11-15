@@ -92,7 +92,7 @@ class TempEnv:
             os.environ[key] = value
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
+    def __exit__(self, exc_type, exc, tb) -> None:
         for key, value in self.old.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -833,14 +833,14 @@ def test_adopt_legacy(report: Any) -> None:
         (bili_old / "Cookies").write_text("bili-cookie", encoding="utf-8")
         original_rename = Path.rename
 
-        def _rename_fail(self: Path, target: Path) -> Path:  # type: ignore[override]
+        def _rename_fail(self: Path, target: Path) -> Path:
             raise OSError("cross-device link")
 
-        Path.rename = _rename_fail  # type: ignore[assignment]
+        Path.rename = _rename_fail  # type: ignore[assignment]  # 原因：测试 monkeypatch pathlib.Path.rename（方法赋值，运行期等价）
         try:
             copied = ctx.accounts.adopt_legacy("bili")
         finally:
-            Path.rename = original_rename  # type: ignore[assignment]
+            Path.rename = original_rename  # type: ignore[method-assign]  # 原因：测试收尾还原 pathlib.Path.rename（方法赋值，运行期等价）
         bili_target = ctx.cfg.data_dir / "browser_data" / "bili" / bili["account_id"] / "user_data_dir"
         report.check("rename 失败时 copy 兜底成功", copied.get("migrated") is True and bili_target.is_dir())
         report.check(
@@ -1228,7 +1228,7 @@ def test_api_routes(report: Any) -> None:
     app.state.service = ctx.service
 
     @app.exception_handler(ServiceError)
-    async def _service_error_handler(_request, exc: ServiceError):  # type: ignore[no-untyped-def]
+    async def _service_error_handler(_request, exc: ServiceError):
         return JSONResponse(
             status_code=exc.status_code,
             content={"error": {"code": exc.code, "message": exc.message}},

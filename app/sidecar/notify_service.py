@@ -32,6 +32,8 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
+from typing_utils import as_dict
+
 import notify_channels
 import secret_store
 
@@ -323,7 +325,7 @@ def render_event(event: Dict[str, Any], privacy_mode: str = DEFAULT_PRIVACY_MODE
 
 def _render_event_impl(event: Dict[str, Any], privacy_mode: str) -> Dict[str, str]:
     event = event if isinstance(event, dict) else {}
-    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+    data = as_dict(event.get("data"))
     event_type = str(event.get("type") or "").strip()
     severity = normalize_severity(event.get("severity"))
     privacy = str(privacy_mode or "").strip().lower()
@@ -505,7 +507,8 @@ class NotifyService:
         self._worker: Optional[NotifierWorker] = None
         # 内存态：每通道令牌桶（时间戳 deque）与熔断计数
         self._buckets: Dict[str, Deque[float]] = {}
-        self._circuits: Dict[str, Dict[str, float]] = {}
+        # 熔断状态：fails/open_until 是数值、last_error 是字符串 -> 值是混合类型（Any）
+        self._circuits: Dict[str, Dict[str, Any]] = {}
         self._last_sent_at: Optional[int] = None
 
     # ================= 生命周期 =======================================
@@ -1503,7 +1506,7 @@ class NotifyService:
     @staticmethod
     def _conditions_ok(conditions: Dict[str, Any], event: Dict[str, Any]) -> bool:
         """最小条件支持：``{"only_if": {"字段": 值}}``；数值字段可用 ``字段_gt/_gte/_lt/_lte``。"""
-        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        data = as_dict(event.get("data"))
         checks = conditions.get("only_if") if isinstance(conditions.get("only_if"), dict) else conditions
         if not isinstance(checks, dict):
             return True
@@ -1514,7 +1517,7 @@ class NotifyService:
                 if key.endswith(suffix):
                     key, operator = key[: -len(suffix)], name
                     break
-            actual = data.get(key)
+            actual: Any = data.get(key)
             try:
                 if operator == "gt" and not (float(actual) > float(expected)):
                     return False

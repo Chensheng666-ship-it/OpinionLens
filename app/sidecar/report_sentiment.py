@@ -23,7 +23,7 @@ import os
 import re
 import sqlite3
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from report_common import (
     _SENTIMENT_ALIASES,
@@ -316,15 +316,15 @@ def analyze_dataset_sentiment(
     cache_entries: List[Dict[str, Any]] = []
     for item, text_hash, _ in item_entries:
         entry = results.get(text_hash)
-        sentiment = normalize_sentiment_label(entry.get("sentiment")) if entry else None
-        if sentiment is None:
+        label = normalize_sentiment_label(entry.get("sentiment")) if entry else None
+        if entry is None or label is None:
             item["sentiment"] = "neutral"
             item["sentiment_raw"] = ""
             item["_sentiment_reason"] = ""
             info["fallback_neutral_items"] += 1
             continue
         reason = _truncate(entry.get("reason") or "", 500)
-        item["sentiment"] = sentiment
+        item["sentiment"] = label
         item["sentiment_raw"] = _text(entry.get("sentiment"))
         item["_sentiment_reason"] = reason
         info["analyzed_items"] += 1
@@ -334,7 +334,7 @@ def analyze_dataset_sentiment(
             "kind": item["kind"],
             "item_id": item_id,
             "text_hash": text_hash,
-            "sentiment": sentiment,
+            "sentiment": label,
             "reason": reason,
         })
     fallback_texts = {text_hash for text_hash, _ in texts} - set(results.keys())
