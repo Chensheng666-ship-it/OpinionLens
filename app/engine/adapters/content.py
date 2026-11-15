@@ -150,6 +150,14 @@ UPSTREAM_CONTRACT = [
     UpstreamSymbol("content", "config/__init__.py", "SAVE_DATA_OPTION"),
     UpstreamSymbol("content", "config/__init__.py", "HEADLESS"),
     UpstreamSymbol("content", "config/__init__.py", "KEYWORDS"),
+    # 采集高级参数（crawl_options -> apply_config）：上游改名会让参数静默失效，必须探测
+    UpstreamSymbol("content", "config/__init__.py", "MAX_CONCURRENCY_NUM", modes=("crawl",)),
+    UpstreamSymbol("content", "config/__init__.py", "CRAWLER_MAX_SLEEP_SEC", modes=("crawl",)),
+    UpstreamSymbol("content", "config/__init__.py", "START_PAGE", modes=("crawl",)),
+    UpstreamSymbol("content", "config/__init__.py", "ENABLE_GET_SUB_COMMENTS", modes=("crawl",)),
+    UpstreamSymbol("content", "config/__init__.py", "SORT_TYPE", platforms=("xhs",), modes=("crawl",)),
+    UpstreamSymbol("content", "config/__init__.py", "PUBLISH_TIME_TYPE", platforms=("dy",), modes=("crawl",)),
+    UpstreamSymbol("content", "config/__init__.py", "WEIBO_SEARCH_TYPE", platforms=("wb",), modes=("crawl",)),
     UpstreamSymbol("content", "main.py", "CrawlerFactory", modes=("crawl",)),
     UpstreamSymbol("content", "database/db.py", "init_db", modes=("crawl",)),
 ]

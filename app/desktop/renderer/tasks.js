@@ -7,11 +7,33 @@
 
   var FS = window.FS;
 
-  /* 采集参数固定为产品默认值：界面不再暴露「每平台条数 / 抓取评论」高级设置。
-     每个平台每个关键词采 15 条内容，自动抓评论，每条内容最多 20 条评论。 */
+  /* 采集参数默认值：每个平台每个关键词采 15 条内容，自动抓评论，每条内容最多 20 条评论。
+     「高级参数」折叠区可调整（见 ADV_*），未改动时按默认值提交（请求体与旧版一致）。 */
   var DEFAULT_MAX_NOTES = 15;
   var DEFAULT_COMMENTS = true;
   var DEFAULT_MAX_COMMENTS = 20;
+  /* 高级参数（与 app/engine/crawl_options.py OPTION_SPECS 同源；后端会再校验一次）。
+     预设只改「速度 vs 风控」相关的三项；其余参数保持默认。 */
+  var ADV_PRESETS = {
+    safe: { label: '稳妥', hint: '请求间隔 3 秒、单平台 1 并发、同时 2 个平台：最不容易触发风控', values: { request_interval: 3, concurrency: 1, platform_parallel: 2 } },
+    balanced: { label: '均衡（默认）', hint: '请求间隔 2 秒、单平台 1 并发、同时 3 个平台：单平台节奏与旧版一致，只是多个平台同时跑', values: { request_interval: 2, concurrency: 1, platform_parallel: 3 } },
+    fast: { label: '快速', hint: '请求间隔 1 秒、单平台 2 并发、同时 7 个平台：最快，但更容易出现验证码 / 限流', values: { request_interval: 1, concurrency: 2, platform_parallel: 7 } }
+  };
+  var ADV_DEFAULTS = {
+    max_notes: DEFAULT_MAX_NOTES,
+    comments: DEFAULT_COMMENTS,
+    max_comments: DEFAULT_MAX_COMMENTS,
+    request_interval: 2,
+    concurrency: 1,
+    platform_parallel: 3,
+    sub_comments: false,
+    start_page: 1,
+    xhs_sort: 'popularity_descending',
+    dy_publish_time: 0,
+    wb_search_type: 'default'
+  };
+  var ADV_OPTION_KEYS = ['request_interval', 'concurrency', 'platform_parallel', 'sub_comments', 'start_page', 'xhs_sort', 'dy_publish_time', 'wb_search_type'];
+  var ADV_STORAGE_KEY = 'fs.tasks.advanced.v1';
   /* 采集动态内容流：一次最多展示 30 条内容，每条内容附带最新 3 条评论 */
   var FEED_LIMIT = 30;
   var FEED_COMMENT_PREVIEW = 3;
@@ -47,6 +69,8 @@
       max_comments: DEFAULT_MAX_COMMENTS,
       name: ''
     },
+    advOpen: false,
+    adv: loadAdvanced(),
     submitting: false,
     submitError: '',
     selectedRunId: null,
@@ -295,7 +319,7 @@
         '</div>' +
         '<div class="field"><label class="field-label" for="f-name">任务名称<span class="optional">可选</span></label>' +
           '<input class="input" id="f-name" data-field="name" maxlength="40" placeholder="例如：示例科技 · 日常监测" value="' + FS.escape(f.name) + '"></div>' +
-        '<div class="field-hint" id="form-default-hint">默认每个平台每个关键词采集 <b>' + DEFAULT_MAX_NOTES + '</b> 条内容，并抓取每条内容最多 <b>' + DEFAULT_MAX_COMMENTS + '</b> 条评论。</div>' +
+        '<div class="field adv-field" id="adv-field"></div>' +
         '<div class="form-actions">' +
           '<button class="btn btn-primary btn-block" data-act="start-run" id="btn-start-run">' + FS.icon('play') + '开始采集</button>' +
         '</div>' +
@@ -304,7 +328,163 @@
       '</div>';
     renderPlatformChecks();
     renderAccountPolicy();
+    renderAdvanced();
     updateFormState();
+  }
+
+  /* ------------------------------------------------------------ 高级参数 */
+  function loadAdvanced() {
+    var out = {};
+    Object.keys(ADV_DEFAULTS).forEach(function (k) { out[k] = ADV_DEFAULTS[k]; });
+    try {
+      var saved = JSON.parse(window.localStorage.getItem(ADV_STORAGE_KEY) || '{}');
+      if (saved && typeof saved === 'object') {
+        Object.keys(ADV_DEFAULTS).forEach(function (k) {
+          if (saved[k] !== undefined && saved[k] !== null && typeof saved[k] === typeof ADV_DEFAULTS[k]) out[k] = saved[k];
+        });
+      }
+    } catch (_err) { /* localStorage 不可用或内容损坏：用默认值 */ }
+    return out;
+  }
+  function saveAdvanced() {
+    try { window.localStorage.setItem(ADV_STORAGE_KEY, JSON.stringify(state.adv)); } catch (_err) { /* 忽略 */ }
+  }
+  function advPresetKey() {
+    var a = state.adv;
+    var hit = '';
+    Object.keys(ADV_PRESETS).forEach(function (key) {
+      var v = ADV_PRESETS[key].values;
+      if (a.request_interval === v.request_interval && a.concurrency === v.concurrency && a.platform_parallel === v.platform_parallel) hit = key;
+    });
+    return hit;
+  }
+  function advIsDefault() {
+    return Object.keys(ADV_DEFAULTS).every(function (k) { return state.adv[k] === ADV_DEFAULTS[k]; });
+  }
+  function advSummary() {
+    var a = state.adv;
+    var preset = advPresetKey();
+    return [
+      '每关键词 ' + a.max_notes + ' 条',
+      a.comments ? ('评论 ≤ ' + a.max_comments + (a.sub_comments ? ' · 含楼中楼' : '')) : '不抓评论',
+      (preset ? ADV_PRESETS[preset].label.replace('（默认）', '') : '自定义') + '：间隔 ' + a.request_interval + ' 秒 · 并发 ' + a.concurrency + ' · 同时 ' + a.platform_parallel + ' 个平台'
+    ].join('；');
+  }
+  function advNumberField(key, label, min, max, step, hint) {
+    return '<label class="adv-item"><span class="adv-label">' + FS.escape(label) + '</span>' +
+      '<input class="input input-sm" type="number" data-adv="' + key + '" min="' + min + '" max="' + max + '" step="' + step + '" value="' + FS.escape(String(state.adv[key])) + '">' +
+      (hint ? '<span class="adv-hint">' + FS.escape(hint) + '</span>' : '') + '</label>';
+  }
+  function advSelectField(key, label, options) {
+    return '<label class="adv-item"><span class="adv-label">' + FS.escape(label) + '</span>' +
+      '<select class="select input-sm" data-adv="' + key + '">' +
+        options.map(function (o) {
+          return '<option value="' + FS.escape(String(o[0])) + '"' + (String(state.adv[key]) === String(o[0]) ? ' selected' : '') + '>' + FS.escape(o[1]) + '</option>';
+        }).join('') +
+      '</select></label>';
+  }
+  function advCheckField(key, label, hint) {
+    return '<label class="adv-item adv-check"><input type="checkbox" data-adv="' + key + '"' + (state.adv[key] ? ' checked' : '') + '>' +
+      '<span class="adv-label">' + FS.escape(label) + '</span>' + (hint ? '<span class="adv-hint">' + FS.escape(hint) + '</span>' : '') + '</label>';
+  }
+  function renderAdvanced() {
+    var box = viewEl && viewEl.querySelector('#adv-field');
+    if (!box) return;
+    var preset = advPresetKey();
+    var head = '<button type="button" class="adv-toggle" data-act="toggle-adv" aria-expanded="' + (state.advOpen ? 'true' : 'false') + '" aria-controls="adv-body">' +
+        '<span class="adv-caret' + (state.advOpen ? ' is-open' : '') + '" aria-hidden="true">▸</span>' +
+        '<span>高级参数</span>' +
+        '<span class="optional">' + (advIsDefault() ? '默认' : '已自定义') + '</span>' +
+      '</button>' +
+      '<div class="field-hint" id="adv-summary">' + FS.escape(advSummary()) + '</div>';
+    if (!state.advOpen) { box.innerHTML = head; return; }
+    var a = state.adv;
+    box.innerHTML = head +
+      '<div class="adv-body" id="adv-body">' +
+        '<div class="adv-presets" role="group" aria-label="速度预设">' +
+          Object.keys(ADV_PRESETS).map(function (key) {
+            return '<button type="button" class="adv-preset' + (preset === key ? ' is-on' : '') + '" data-adv-preset="' + key + '" aria-pressed="' + (preset === key ? 'true' : 'false') + '" title="' + FS.escape(ADV_PRESETS[key].hint) + '">' + FS.escape(ADV_PRESETS[key].label) + '</button>';
+          }).join('') +
+        '</div>' +
+        '<div class="field-hint" id="adv-preset-hint">' + FS.escape(preset ? ADV_PRESETS[preset].hint : '自定义：间隔越小、并发越高越快，也越容易出现验证码或限流。') + '</div>' +
+        '<div class="adv-group-title">采集量</div>' +
+        '<div class="adv-grid">' +
+          advNumberField('max_notes', '每关键词条数', 1, 1000, 1, '快手固定只取首屏 20 条') +
+          advNumberField('start_page', '搜索起始页', 1, 50, 1) +
+          advCheckField('comments', '抓取评论') +
+          (a.comments ? advNumberField('max_comments', '每条评论上限', 0, 1000, 1) : '') +
+          (a.comments ? advCheckField('sub_comments', '抓二级评论', '楼中楼，较慢') : '') +
+        '</div>' +
+        '<div class="adv-group-title">速度与风控</div>' +
+        '<div class="adv-grid">' +
+          advNumberField('request_interval', '请求间隔（秒）', 0.5, 30, 0.5, '每页 / 每条之间的等待') +
+          advNumberField('concurrency', '单平台并发', 1, 5, 1, '同时抓详情 / 评论的条数') +
+          advNumberField('platform_parallel', '同时采集平台数', 1, 7, 1, '不同平台、不同账号，互不影响风控') +
+        '</div>' +
+        '<div class="adv-group-title">平台筛选</div>' +
+        '<div class="adv-grid">' +
+          advSelectField('xhs_sort', '小红书排序', [['general', '综合'], ['popularity_descending', '最热'], ['time_descending', '最新']]) +
+          advSelectField('dy_publish_time', '抖音发布时间', [[0, '不限'], [1, '1 天内'], [7, '1 周内'], [180, '半年内']]) +
+          advSelectField('wb_search_type', '微博搜索类型', [['default', '综合'], ['real_time', '实时'], ['popular', '热门'], ['video', '视频']]) +
+        '</div>' +
+        '<div class="adv-foot"><button type="button" class="link-quiet" data-act="reset-adv">恢复默认</button></div>' +
+      '</div>';
+  }
+  function onAdvChange(t) {
+    var key = t.getAttribute('data-adv');
+    if (!key || !(key in ADV_DEFAULTS)) return;
+    var def = ADV_DEFAULTS[key];
+    var value;
+    if (typeof def === 'boolean') value = !!t.checked;
+    else if (typeof def === 'number') {
+      value = Number(t.value);
+      var min = Number(t.getAttribute('min'));
+      var max = Number(t.getAttribute('max'));
+      if (t.value === '' || !isFinite(value)) value = state.adv[key];
+      if (t.getAttribute('step') === '1') value = Math.round(value);
+      /* 越界按边界收敛（后端仍会校验），并把收敛后的值写回输入框，避免「看着是 99、提交的是 5」 */
+      if (!isNaN(min) && value < min) value = min;
+      if (!isNaN(max) && value > max) value = max;
+      t.value = String(value);
+    } else value = String(t.value);
+    if (key === 'dy_publish_time') value = Number(value) || 0;
+    state.adv[key] = value;
+    saveAdvanced();
+    /* 勾选类会改变可见字段：整块重绘；数字输入 / 下拉只刷新摘要，避免打断焦点 */
+    if (typeof def === 'boolean') renderAdvanced();
+    else refreshAdvSummary();
+  }
+  function refreshAdvSummary() {
+    var box = viewEl && viewEl.querySelector('#adv-field');
+    if (!box) return;
+    var sum = box.querySelector('#adv-summary');
+    if (sum) sum.textContent = advSummary();
+    var tag = box.querySelector('.adv-toggle .optional');
+    if (tag) tag.textContent = advIsDefault() ? '默认' : '已自定义';
+    var preset = advPresetKey();
+    box.querySelectorAll('[data-adv-preset]').forEach(function (b) {
+      var on = b.getAttribute('data-adv-preset') === preset;
+      b.classList.toggle('is-on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    var presetHint = box.querySelector('#adv-preset-hint');
+    if (presetHint) presetHint.textContent = preset ? ADV_PRESETS[preset].hint : '自定义：间隔越小、并发越高越快，也越容易出现验证码或限流。';
+  }
+  function applyAdvPreset(key) {
+    var preset = ADV_PRESETS[key];
+    if (!preset) return;
+    Object.keys(preset.values).forEach(function (k) { state.adv[k] = preset.values[k]; });
+    saveAdvanced();
+    renderAdvanced();
+  }
+  /** 只提交与默认值不同的高级参数：未改动时请求体与旧版完全一致 */
+  function advOptionsPayload() {
+    var out = {};
+    ADV_OPTION_KEYS.forEach(function (k) {
+      if (k === 'sub_comments' && !state.adv.comments) return;
+      if (state.adv[k] !== ADV_DEFAULTS[k]) out[k] = state.adv[k];
+    });
+    return Object.keys(out).length ? out : null;
   }
 
   function renderPlatformChecks() {
@@ -1020,6 +1200,14 @@
     (lines || []).forEach(function (line) {
       var raw = String((line && (line.text || line.message)) || '').replace(/\r/g, '');
       if (!raw || !raw.trim()) return;
+      /* 平台并行：sidecar 给每行加了 [xhs] 这类前缀；剥掉前缀并把它作为本行归属平台 */
+      var linePlatform = '';
+      var pfPrefix = raw.match(/^\[(xhs|dy|ks|bili|wb|tieba|zhihu)\] /);
+      if (pfPrefix) {
+        linePlatform = pfPrefix[1];
+        raw = raw.slice(pfPrefix[0].length);
+        currentPlatform = linePlatform;
+      }
       var ts = logTs(line && line.ts);
       var lineLevel = String((line && line.level) || '').toLowerCase();
       var text = raw.trim();
@@ -2197,8 +2385,10 @@
 
   /* ------------------------------------------------------------ 交互 */
   function onPageClick(e) {
-    var target = e.target.closest('[data-act], [data-run-id], [data-pf], [data-account-mode], [data-remove-keyword], [data-task-tab], [data-detail-tab], [data-log-filter]');
+    var target = e.target.closest('[data-act], [data-run-id], [data-pf], [data-account-mode], [data-remove-keyword], [data-task-tab], [data-detail-tab], [data-log-filter], [data-adv-preset]');
     if (!target) return;
+    var advPreset = target.getAttribute('data-adv-preset');
+    if (advPreset) { applyAdvPreset(advPreset); return; }
     var accountMode = target.getAttribute('data-account-mode');
     if (accountMode) { setAccountMode(accountMode); return; }
     var detailTab = target.getAttribute('data-detail-tab');
@@ -2255,6 +2445,12 @@
         }
         break;
       case 'refresh-runs': loadRuns(false); loadAccounts(true); break;
+      case 'toggle-adv': state.advOpen = !state.advOpen; renderAdvanced(); break;
+      case 'reset-adv':
+        Object.keys(ADV_DEFAULTS).forEach(function (k) { state.adv[k] = ADV_DEFAULTS[k]; });
+        saveAdvanced();
+        renderAdvanced();
+        break;
       case 'select-all': state.form.platforms = FS.PLATFORMS.map(function (p) { return p.id; }); renderPlatformChecks(); updateFormState(); break;
       case 'clear-all': state.form.platforms = []; renderPlatformChecks(); updateFormState(); break;
       case 'start-run': submitRun(); break;
@@ -2392,10 +2588,16 @@
     }
   }
 
-  /** 表单只剩「任务名称」一个受控输入；采集条数 / 抓评论已固定为默认值，不再随字段变化。 */
+  /** 表单受控输入：任务名称 / 账号策略 / 高级参数（data-adv）。 */
   function onFieldChange(e) {
     var t = e.target;
     if (!t || !t.getAttribute) return;
+    if (t.hasAttribute('data-adv')) {
+      /* 数字框只在 change（失焦/回车）时落值，input 阶段不打断用户输入 */
+      if (e.type === 'input' && t.type === 'number') return;
+      onAdvChange(t);
+      return;
+    }
     if (t.id === 'account-strategy' && t.value) { state.accountStrategy = t.value; updateFormState(); return; }
     var accountFor = t.getAttribute('data-account-for');
     if (accountFor) { state.accountIds[accountFor] = t.value || ''; updateFormState(); return; }
@@ -2418,10 +2620,12 @@
     var payload = {
       keywords: keywords,
       platforms: state.form.platforms.slice(),
-      max_notes: DEFAULT_MAX_NOTES,
-      comments: DEFAULT_COMMENTS,
-      max_comments: DEFAULT_MAX_COMMENTS
+      max_notes: state.adv.max_notes,
+      comments: !!state.adv.comments,
+      max_comments: state.adv.comments ? state.adv.max_comments : 0
     };
+    var advOptions = advOptionsPayload();
+    if (advOptions) payload.options = advOptions;
     if (String(state.form.name || '').trim()) payload.name = String(state.form.name).trim();
     var policy = accountPolicyPayload();
     if (policy) payload.account_policy = policy;

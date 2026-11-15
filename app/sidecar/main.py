@@ -52,6 +52,7 @@ from engine_runner import (  # noqa: E402
     ServiceError,
     SidecarConfig,
 )
+from crawl_options_loader import crawl_options  # noqa: E402  (采集高级参数单一来源：app/engine/crawl_options.py)
 from events import bus  # noqa: E402  (进程内事件总线：采集/报告/账号事件 → 通知服务)
 from llm_client import LLMService  # noqa: E402  (模型 API 配置）
 from notify_service import NotifyService  # noqa: E402  (通知推送）
@@ -80,6 +81,8 @@ class RunCreateRequest(BaseModel):
     comments: bool = True
     max_comments: int = 20
     name: Optional[str] = None
+    # 采集高级参数（可选；键与范围见 app/engine/crawl_options.py OPTION_SPECS）
+    options: Optional[Dict[str, Any]] = None
 
 
 class RunResumeRequest(BaseModel):
@@ -205,6 +208,13 @@ def _normalize_run_request(payload: RunCreateRequest) -> Dict[str, Any]:
     name = (payload.name or "").strip()
     if name:
         params["name"] = name
+    try:
+        options = crawl_options.normalize_options(payload.options)
+    except ValueError as exc:
+        raise ServiceError("INVALID_PARAMS", f"options 无效：{exc}", 400) from exc
+    if options:
+        # 只在显式给出时写入，旧任务 params 不变（续采不会被新默认值悄悄改掉）
+        params["options"] = options
     return params
 
 
@@ -427,6 +437,11 @@ def create_app(cfg: SidecarConfig, token: str) -> FastAPI:
     def create_run(payload: RunCreateRequest) -> Dict[str, Any]:
         params = _normalize_run_request(payload)
         return service.create_run(params)
+
+    @app.get("/api/runs/options")
+    def run_option_catalog() -> Dict[str, Any]:
+        """采集高级参数目录（前端据此渲染表单；与后端校验同源）。"""
+        return {"options": crawl_options.option_catalog()}
 
     @app.get("/api/runs")
     def list_runs() -> Dict[str, Any]:

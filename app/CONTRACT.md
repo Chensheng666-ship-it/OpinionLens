@@ -57,7 +57,7 @@ app/
 ```text
 python engine/entry.py --mode login --platform xhs              --data-dir <abs> [--account-id <id>] [--profile-template <abs 模板>] [--headless true|false] [--timeout 420]
 python engine/entry.py --mode test  --platform xhs              --data-dir <abs> [--account-id <id>] [--profile-template <abs 模板>]
-python engine/entry.py --mode crawl --platform xhs --keywords "示例科技" --max-notes 15 --comments true --max-comments 20 --data-dir <abs> [--account-id <id>]
+python engine/entry.py --mode crawl --platform xhs --keywords "示例科技" --max-notes 15 --comments true --max-comments 20 --data-dir <abs> [--account-id <id>] [--options-json '{"request_interval":1.5,"concurrency":2}']
 ```
 
 - `--platform`: `xhs|dy|ks|bili|wb|tieba|zhihu`
@@ -67,6 +67,22 @@ python engine/entry.py --mode crawl --platform xhs --keywords "示例科技" --m
 - `--keywords`: 英文/中文逗号分隔多个关键词（同一平台内逐个搜索）
 - `--max-notes`: 每关键词条数（映射 `config.CRAWLER_MAX_NOTES_COUNT`）
 - `--comments/--max-comments`: 是否抓评论、每条评论上限
+- `--options-json`（crawl，可选）: 采集高级参数 JSON。键、默认值与范围**只在 `engine/crawl_options.py` 的 `OPTION_SPECS` 定义一次**（sidecar 同源校验）；
+  未知键 / 越界 → argparse 报错退出。缺省 = 改造前写死的值，不传时行为不变：
+
+  | 键 | 默认 | 范围 | 映射 |
+  |---|---|---|---|
+  | `request_interval` | 2.0 | 0.5–30 秒 | `config.CRAWLER_MAX_SLEEP_SEC` |
+  | `concurrency` | 1 | 1–5 | `config.MAX_CONCURRENCY_NUM` |
+  | `sub_comments` | false | — | `config.ENABLE_GET_SUB_COMMENTS`（仅 `comments=true` 时生效） |
+  | `start_page` | 1 | 1–50 | `config.START_PAGE` |
+  | `xhs_sort` | `popularity_descending` | `general` / `popularity_descending` / `time_descending` | `config.SORT_TYPE` |
+  | `dy_publish_time` | 0 | 0 / 1 / 7 / 180 | `config.PUBLISH_TIME_TYPE` |
+  | `wb_search_type` | `default` | `default` / `real_time` / `popular` / `video` | `config.WEIBO_SEARCH_TYPE` |
+
+  `platform_parallel`（1–7，默认 3）也在规格表里，但只作用于 sidecar 编排，**不下发引擎**。
+- 环境变量 `ENGINE_STUB_HEAVY_IMPORTS`（默认 `1`）：import 前用占位模块替换上游 `tools.words`（词云：matplotlib/wordcloud）与
+  `database.mongodb_store_base`（motor），冷启动约快 1.7s；本应用固定 sqlite + 关词云，占位类被实例化时明确抛错。设 `0` 关闭。
 - `--headless`: login 默认 `false`（**打开可见 Edge 窗口**，便于用户完成扫码后的滑块/拼图/短信验证；`ENGINE_LOGIN_HEADLESS=1` 可强制无头）；test/crawl 默认 `true`。UI 需提示用户「如出现验证请到浏览器窗口完成」。
 - `--timeout`: login 模式最大等待秒数，默认 300
 - 环境变量：`MC_ROOT`（覆盖 MediaCrawler 根）、`BROWSER_CHANNEL`（默认 `msedge`，可选 `chrome`）
@@ -180,7 +196,8 @@ python app/sidecar/main.py --port 0 --token <random> --data-dir <abs>
 | POST | `/api/accounts/{platform}/login/{login_id}/cancel` | — | `{ok}` |
 | POST | `/api/accounts/{platform}/test` | — | 同步（≤90s）`{ok, message, duration_ms}`（内部走 engine test 模式）。**不同平台可并发检测**（同平台串行）；同平台检测/登录中或任意 run 进行中时返回 409 BUSY，message 区分"该平台正在检测/登录"与全局任务 |
 | DELETE | `/api/accounts/{platform}` | — | `{ok}` 删除该平台 profile（重新登录用） |
-| POST | `/api/runs` | `{keywords:[str], platforms:[str], max_notes:int, comments:bool, max_comments:int, name?:str}` | `{run_id, status:"running"}` |
+| POST | `/api/runs` | `{keywords:[str], platforms:[str], max_notes:int, comments:bool, max_comments:int, name?:str, options?:{…}}` | `{run_id, status:"running"}`；`options` 键见 §1.1 `--options-json`（另含 `platform_parallel`），未知键 / 越界 → `400 INVALID_PARAMS`；只有显式给出的键写入 `params.options` |
+| GET | `/api/runs/options` | — | `{options:[{key,type,default,label,min?,max?,choices?}]}` 高级参数目录（与校验同源） |
 | GET | `/api/runs` | — | `{runs:[run摘要]}` |
 | GET | `/api/runs/{run_id}` | — | `{run_id,status:"running|done|failed|cancelled",created_at,finished_at,params,platforms:[{platform,label,status:"queued|running|done|failed|skipped",progress:int,stage,saved_items:int,message,started_at,finished_at}],excel_path:str|null}` |
 | GET | `/api/runs/{run_id}/logs?tail=200&after_line=7` | — | `{lines:[{ts,level,text}], next_line:int, total_lines:int}`；不传 `after_line` = 尾部 `tail` 行（现状）；传 `after_line`（0 基）= 只返回该行之后的新行，`next_line` = 总行数（不回退）。非法值（负数/非整数）→ `400 invalid_params` |
@@ -192,7 +209,7 @@ python app/sidecar/main.py --port 0 --token <random> --data-dir <abs>
 | POST | `/api/system/open-file` | `{path:str}` | `{ok}`（仅允许 `<data-dir>/exports` 下文件） |
 | GET | `/api/system/info` | — | `{version, data_dir, logs_dir}` |
 
-- 采集编排：按 `platforms` 顺序串行，每个平台一次 engine `crawl` 子进程；单平台失败标记 `failed` 继续下一个；首次 run 全部结束后 run=`done`（有失败也 done，详情在平台项里；**续采任务按下方 resume 规则判定**）。
+- 采集编排：按 `platforms` 顺序提交到线程池，**同时最多 `options.platform_parallel` 个平台**（默认 3；环境变量 `SIDECAR_PLATFORM_PARALLEL` 可再压低上限；=1 时与旧版串行逐行一致）。每个平台一次 engine `crawl` 子进程（同一账号仍由账号锁互斥）；单平台失败标记 `failed`，不影响其它平台；并行时 run 日志每行带 `[platform] ` 前缀（引擎输出与该平台的 sidecar 分段行都带），任务级行不带；`stop` 终止所有运行中平台，排队中的平台标 `skipped`；首次 run 全部结束后 run=`done`（有失败也 done，详情在平台项里；**续采任务按下方 resume 规则判定**）。
 - **断点续采 resume**：
   - 复用**同一 run_id 与原始 started_ts**（保证导出过滤口径仍包含断掉前已完成平台的数据）；params/keywords 从 DB 读取；
   - 默认续跑该 run 中 status ∈ `queued|failed|skipped` 的平台；显式 `platforms` 必须是该 run 创建时的平台并去重（未知平台 422）；

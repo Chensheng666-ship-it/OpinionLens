@@ -352,8 +352,11 @@ class EngineProcess:
         sink: LogSink,
         on_event: Callable[[Dict[str, Any]], None],
         label: str = "",
+        line_prefix: str = "",
     ) -> None:
         self.cmd = list(cmd)
+        # 平台并行时多个引擎写同一个 run 日志：每行加 ``[platform] `` 前缀，前端按前缀归属平台
+        self.line_prefix = line_prefix
         self.cwd = Path(cwd)
         self.env = dict(env)
         self.sink = sink
@@ -413,9 +416,9 @@ class EngineProcess:
                         except Exception:  # noqa: BLE001 - 事件处理异常不拖垮读取线程
                             log.exception("处理 engine 事件失败：%s", payload[:300])
                     else:
-                        self.sink.append(raw)
+                        self.sink.append(self.line_prefix + raw)
                 else:
-                    self.sink.append(raw)
+                    self.sink.append(self.line_prefix + raw)
         except Exception as exc:  # noqa: BLE001 - 读取端异常同样落日志
             self.sink.append(f"[sidecar] 读取引擎输出异常：{exc}")
         finally:
@@ -481,6 +484,7 @@ class EngineRunner:
         sink: LogSink,
         on_event: Callable[[Dict[str, Any]], None],
         label: str,
+        line_prefix: str = "",
     ) -> EngineProcess:
         entry = self._entry_path()
         if not entry.is_file():
@@ -491,7 +495,7 @@ class EngineRunner:
         if not python.is_file():
             raise EngineStartError(f"Python 解释器不存在：{python}")
         cmd = [str(python), str(entry)] + list(args)
-        sink.append("[sidecar] 启动引擎：" + " ".join(cmd))
+        sink.append(line_prefix + "[sidecar] 启动引擎：" + " ".join(cmd))
         proc = EngineProcess(
             cmd=cmd,
             cwd=self.cfg.mc_root,
@@ -499,9 +503,10 @@ class EngineRunner:
             sink=sink,
             on_event=on_event,
             label=label,
+            line_prefix=line_prefix,
         )
         proc.start()
-        sink.append(f"[sidecar] 引擎已启动 pid={proc.pid}")
+        sink.append(f"{line_prefix}[sidecar] 引擎已启动 pid={proc.pid}")
         return proc
 
     # -- 三种模式 --------------------------------------------------------
@@ -606,6 +611,8 @@ class EngineRunner:
         on_event: Callable[[Dict[str, Any]], None],
         account_id: str = "",
         profile_template: str = "",
+        options: Optional[Dict[str, Any]] = None,
+        line_prefix: bool = False,
     ) -> EngineProcess:
         args = [
             "--mode", "crawl",
@@ -616,5 +623,9 @@ class EngineRunner:
             "--max-comments", str(int(max_comments)),
             "--data-dir", str(self.cfg.data_dir),
         ] + self._account_extra_args(account_id, profile_template)
+        if options:
+            # 空 options 不追加参数：旧 CLI 逐字节兼容
+            args.extend(["--options-json", json.dumps(options, ensure_ascii=False, sort_keys=True)])
         label = f"crawl-{platform}{self._scope_suffix(account_id)}"
-        return self._spawn(args, sink, on_event, label=label)
+        prefix = f"[{platform}] " if line_prefix else ""
+        return self._spawn(args, sink, on_event, label=label, line_prefix=prefix)

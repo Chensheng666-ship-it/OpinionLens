@@ -355,6 +355,23 @@ def test_risk_blocked_failover_failed() -> None:
     shutil.rmtree(ctx.data_dir, ignore_errors=True)
 
 
+def test_single_account_no_fake_failover() -> None:
+    """只有一个账号且未登录：不能出现「已自动切换账号：默认账号 → 默认账号」这种假换号说明。"""
+    print("\n--- 5b. 单账号失败不假装换号 ---")
+    accounts = FakeAccounts({"ks": [{"account_id": "k1"}]}, kinds={"*": "login_invalid"})
+    backend = FakeBackend({"ks": [fail_events("未登录")]})
+    ctx = Ctx("single", accounts, backend)
+    with TempEnv(SIDECAR_ACCOUNT_MAX_ATTEMPTS="2", SIDECAR_AUTO_RETRY_MAX="0"):
+        run_id = ctx.create(["ks"])
+        run = ctx.wait_done(run_id)
+    ks = platform_row(run, "ks")
+    message = str(ks.get("message") or "")
+    check("单账号: 只跑一次引擎", [p for p, _ in backend.started] == ["ks"], str(backend.started))
+    check("单账号: 不出现「已自动切换账号」", "已自动切换账号" not in message, message[:160])
+    check("单账号: 提示没有其它可用账号", "没有其它可用账号" in message, message[:160])
+    shutil.rmtree(ctx.data_dir, ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 # 6. stop → cancelled + 未开始平台 skipped
 # ---------------------------------------------------------------------------
@@ -363,7 +380,8 @@ def test_stop_cancelled() -> None:
     accounts = FakeAccounts({"xhs": [{"account_id": "a1"}], "dy": [{"account_id": "d1"}]})
     backend = FakeBackend({"xhs": [ok_events()], "dy": [ok_events()]}, manual_platforms={"xhs"})
     ctx = Ctx("stop", accounts, backend)
-    run_id = ctx.create(["xhs", "dy"])
+    # 串行语义：第二个平台尚未开始 -> skipped（并行时 dy 会与 xhs 同时启动，见 15. 平台并行）
+    run_id = ctx.create(["xhs", "dy"], options={"platform_parallel": 1})
     wait_until(lambda: len(backend.started) >= 1, timeout=5.0)
     ctx.manager.stop(run_id)
     run = ctx.wait_done(run_id)
@@ -492,7 +510,10 @@ def test_backend_param_contract() -> None:
         ctx.wait_done(run_id)
     finally:
         pass
-    expected = {"keywords", "max_notes", "comments", "max_comments", "account_id", "profile_template"}
+    expected = {
+        "keywords", "max_notes", "comments", "max_comments", "account_id", "profile_template",
+        "options", "line_prefix",
+    }
     started = backend.started or []
     params = started[0][1] if started else {}
     check("backend 参数: 键集合与契约一致（新增参数必须同步 backend）", set(params.keys()) == expected, str(sorted(params.keys())))
@@ -502,6 +523,105 @@ def test_backend_param_contract() -> None:
         str({k: params.get(k) for k in ("max_notes", "comments", "max_comments")}),
     )
     check("backend 参数: 带账号 identity（account_id 非空）", bool(params.get("account_id")), str(params.get("account_id")))
+    shutil.rmtree(ctx.data_dir, ignore_errors=True)
+
+
+def test_platform_parallel() -> None:
+    """平台并行：默认 3 个同时跑；单平台失败/异常不影响其它平台；stop 停掉所有运行中平台。"""
+    print("\n--- 15. 平台并行 ---")
+    platforms = ["xhs", "dy", "ks", "bili"]
+    accounts = FakeAccounts({p: [{"account_id": f"{p}1"}] for p in platforms})
+    backend = FakeBackend(
+        {p: [ok_events()] for p in platforms},
+        manual_platforms=set(platforms),
+    )
+    ctx = Ctx("parallel", accounts, backend)
+    run_id = ctx.create(platforms)
+    wait_until(lambda: len(backend.started) >= 3, timeout=5.0)
+    time.sleep(0.3)  # 留出时间：若并行度失控会启动第 4 个
+    started_now = [p for p, _ in backend.started]
+    check("并行: 默认同时启动 3 个平台（第 4 个排队）", len(started_now) == 3, str(started_now))
+    rt = ctx.manager._runtimes[run_id]
+    check("并行: runtime 同时持有 3 个引擎句柄", len(rt.running_handles()) == 3, str(len(rt.running_handles())))
+    check("并行: line_prefix 下发给 backend", all(params.get("line_prefix") is True for _, params in backend.started))
+    ctx.manager.stop(run_id)
+    run = ctx.wait_done(run_id)
+    check("并行 stop: run=cancelled", run.get("status") == "cancelled", str(run.get("status")))
+    check(
+        "并行 stop: 3 个运行中平台都被停止（backend.stop ≥ 3）",
+        len([h for h in backend.stopped if h is not None]) >= 3,
+        str(len(backend.stopped)),
+    )
+    check("并行 stop: 排队平台 skipped", platform_row(run, "bili").get("status") == "skipped", str(platform_row(run, "bili").get("status")))
+    check("并行 stop: 句柄表已清空", rt.running_handles() == [])
+    logs = [line["text"] for line in ctx.manager.logs(run_id, tail=500)[0]]
+    check("并行: 平台日志带 [platform] 前缀", any(text.startswith("[xhs] =====") for text in logs), str(logs[:6]))
+    shutil.rmtree(ctx.data_dir, ignore_errors=True)
+
+    # 单平台失败隔离 + 全部跑完
+    accounts = FakeAccounts({p: [{"account_id": f"{p}1"}] for p in platforms})
+    backend = FakeBackend(
+        {
+            "xhs": [ok_events(2)],
+            "dy": [fail_events("未登录")],
+            "ks": [ok_events(4)],
+            "bili": [ok_events(1)],
+        }
+    )
+    ctx = Ctx("parallel_mix", accounts, backend)
+    with TempEnv(SIDECAR_ACCOUNT_MAX_ATTEMPTS="1", SIDECAR_AUTO_RETRY_MAX="0"):
+        run_id = ctx.create(platforms, options={"platform_parallel": 4})
+        run = ctx.wait_done(run_id)
+    statuses = {p: platform_row(run, p).get("status") for p in platforms}
+    check(
+        "并行: 单平台失败不影响其它平台",
+        statuses == {"xhs": "done", "dy": "failed", "ks": "done", "bili": "done"},
+        str(statuses),
+    )
+    check("并行: 每个平台恰好启动一次", sorted(p for p, _ in backend.started) == sorted(platforms), str(backend.started))
+    shutil.rmtree(ctx.data_dir, ignore_errors=True)
+
+    # platform_parallel=1 与旧版串行一致：任一时刻最多 1 个句柄
+    accounts = FakeAccounts({p: [{"account_id": f"{p}1"}] for p in ("xhs", "dy")})
+    backend = FakeBackend({"xhs": [ok_events()], "dy": [ok_events()]}, manual_platforms={"xhs"})
+    ctx = Ctx("parallel_one", accounts, backend)
+    run_id = ctx.create(["xhs", "dy"], options={"platform_parallel": 1})
+    wait_until(lambda: len(backend.started) >= 1, timeout=5.0)
+    time.sleep(0.3)
+    check("串行: platform_parallel=1 时只启动 1 个", [p for p, _ in backend.started] == ["xhs"], str(backend.started))
+    check("串行: 不下发 line_prefix（旧日志格式不变）", backend.started[0][1].get("line_prefix") is False)
+    ctx.manager.stop(run_id)
+    ctx.wait_done(run_id)
+    shutil.rmtree(ctx.data_dir, ignore_errors=True)
+
+
+def test_options_forwarding() -> None:
+    """高级参数：显式给出的键原样下发引擎；sidecar 专用键（platform_parallel）不下发。"""
+    print("\n--- 16. 采集高级参数下发 ---")
+    accounts = FakeAccounts({"xhs": [{"account_id": "a1"}]})
+    backend = FakeBackend({"xhs": [ok_events(1)]})
+    ctx = Ctx("options", accounts, backend)
+    run_id = ctx.create(
+        ["xhs"],
+        options={"request_interval": 1.0, "concurrency": 2, "xhs_sort": "time_descending", "platform_parallel": 2},
+    )
+    ctx.wait_done(run_id)
+    params = backend.started[0][1] if backend.started else {}
+    check(
+        "参数: 引擎收到 request_interval / concurrency / xhs_sort",
+        params.get("options") == {"request_interval": 1.0, "concurrency": 2, "xhs_sort": "time_descending"},
+        str(params.get("options")),
+    )
+    check("参数: platform_parallel 不下发引擎", "platform_parallel" not in (params.get("options") or {}))
+    shutil.rmtree(ctx.data_dir, ignore_errors=True)
+
+    accounts = FakeAccounts({"xhs": [{"account_id": "a1"}]})
+    backend = FakeBackend({"xhs": [ok_events(1)]})
+    ctx = Ctx("options_none", accounts, backend)
+    run_id = ctx.create(["xhs"])
+    ctx.wait_done(run_id)
+    params = backend.started[0][1] if backend.started else {}
+    check("参数: 未给 options 时下发空对象（引擎 CLI 不追加 --options-json）", params.get("options") == {}, str(params.get("options")))
     shutil.rmtree(ctx.data_dir, ignore_errors=True)
 
 
@@ -546,6 +666,7 @@ def main() -> int:
         test_network_retry,
         test_login_invalid_failover_and_accounting,
         test_risk_blocked_failover_failed,
+        test_single_account_no_fake_failover,
         test_stop_cancelled,
         test_resume_attempt_numbering,
         test_no_account,
@@ -553,6 +674,8 @@ def main() -> int:
         test_event_contract_and_facade,
         test_backend_param_contract,
         test_config_path_contract,
+        test_platform_parallel,
+        test_options_forwarding,
     ]
     for test in tests:
         try:

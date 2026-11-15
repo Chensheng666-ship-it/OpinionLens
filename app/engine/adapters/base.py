@@ -360,7 +360,52 @@ def install_import_path(mc_root: Any) -> Path:
             os.chdir(str(root))
         except OSError as exc:
             log.debug("切换 cwd 到 MediaCrawler 根失败：%s: %s", type(exc).__name__, exc)
+        install_heavy_import_stubs()
     return root
+
+
+# --------------------------------------------------------------------------------------
+# 冷启动加速：上游 store 层在 import 期无条件导入两个重模块，而本应用永远用不到
+#   * tools.words            -> matplotlib.pyplot + wordcloud + jieba（约 1.0s）；apply_config 固定
+#                               ENABLE_GET_WORDCLOUD=False，AsyncFileWriter 不会实例化它
+#   * database.mongodb_store_base -> motor/pymongo（约 0.5s）；SAVE_DATA_OPTION 固定 sqlite
+# 在 import 之前放入 sys.modules 占位：只提供被 import 的类名，真被实例化时明确抛错，
+# 不会静默失效。设 ENGINE_STUB_HEAVY_IMPORTS=0 可关闭（排查上游问题时用）。
+# --------------------------------------------------------------------------------------
+HEAVY_IMPORT_STUBS: Dict[str, Tuple[str, ...]] = {
+    "tools.words": ("AsyncWordCloudGenerator",),
+    "database.mongodb_store_base": ("MongoDBStoreBase", "MongoDBConnection"),
+}
+
+
+def _make_disabled_class(module_name: str, class_name: str) -> type:
+    def _init(self: Any, *_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError(
+            f"{module_name}.{class_name} 已被舆见引擎禁用（词云 / MongoDB 不在本应用支持范围）；"
+            "如确需启用请设置 ENGINE_STUB_HEAVY_IMPORTS=0"
+        )
+
+    return type(class_name, (), {"__init__": _init, "__module__": module_name})
+
+
+def install_heavy_import_stubs() -> List[str]:
+    """在上游模块 import 前放入占位模块；已真实导入的不覆盖。返回实际放入的模块名。"""
+    if str(os.environ.get("ENGINE_STUB_HEAVY_IMPORTS", "1")).strip().lower() in ("0", "false", "no", "off"):
+        return []
+    import types
+
+    installed: List[str] = []
+    for module_name, class_names in HEAVY_IMPORT_STUBS.items():
+        if module_name in sys.modules:
+            continue
+        stub = types.ModuleType(module_name)
+        stub.__doc__ = "舆见引擎占位模块（冷启动加速，见 adapters/base.py HEAVY_IMPORT_STUBS）"
+        stub.__engine_stub__ = True  # type: ignore[attr-defined]  # 原因：给占位模块挂识别标记（ModuleType 无该属性声明）
+        for class_name in class_names:
+            setattr(stub, class_name, _make_disabled_class(module_name, class_name))
+        sys.modules[module_name] = stub
+        installed.append(module_name)
+    return installed
 
 
 def _prepare_user_hash_patch() -> None:

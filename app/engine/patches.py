@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 import adapters
+import crawl_options
 from adapters.base import (
     AlreadyLoggedIn,
     EngineIncompatible,
@@ -44,6 +45,7 @@ from adapters.base import (
     detect_upstream_contract,
     emit_patch_error,
     emit_patch_warning,
+    install_heavy_import_stubs,
     iter_contracts,
     patch_warning_counts,
     register_contract,
@@ -403,6 +405,7 @@ def bootstrap(mc_root: Path) -> None:
     os.chdir(str(mc_root))
     if str(mc_root) not in sys.path:
         sys.path.insert(0, str(mc_root))
+    install_heavy_import_stubs()
 
 
 def import_mediacrawler(
@@ -491,8 +494,12 @@ def apply_config(
     max_comments: int = 20,
     account_id: str = "",
     profile_template: Optional[str] = None,
+    options: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """按契约 §1.3-4 注入配置；返回实际生效的关键路径/参数，便于日志与自测。
+
+    ``options``：采集高级参数（见 ``crawl_options.OPTION_SPECS``）；缺省键取默认值，
+    默认值等于改造前写死的值，不传时行为不变。
 
     ``profile_template``（账号化）：含恰好一个 ``%s`` 的绝对路径模板，交给
     MediaCrawler 做 ``% config.PLATFORM`` 替换；为空时按 ``account_id`` 生成
@@ -524,7 +531,8 @@ def apply_config(
     config.USER_DATA_DIR = user_data_dir
     config.SAVE_DATA_OPTION = "sqlite"
     config.ENABLE_GET_COMMENTS = bool(comments)
-    config.ENABLE_GET_SUB_COMMENTS = False
+    opts = crawl_options.effective_options(options)
+    config.ENABLE_GET_SUB_COMMENTS = bool(comments) and bool(opts["sub_comments"])
     config.ENABLE_GET_MEDIA = False
     config.ENABLE_GET_WORDCLOUD = False
     config.CRAWLER_MAX_NOTES_COUNT = int(max_notes)
@@ -541,8 +549,13 @@ def apply_config(
         else:
             print("[engine] ENGINE_KS_SEARCH_WEB_STYLE=0：保持旧分页行为，不限制 ks notes 数量", flush=True)
     config.CRAWLER_MAX_COMMENTS_COUNT_SINGLENOTES = int(max_comments)
-    config.MAX_CONCURRENCY_NUM = 1
-    config.START_PAGE = 1
+    config.MAX_CONCURRENCY_NUM = int(opts["concurrency"])
+    config.START_PAGE = int(opts["start_page"])
+    config.CRAWLER_MAX_SLEEP_SEC = float(opts["request_interval"])
+    # 平台专属排序/时间范围（上游各平台 core 直接读 config 模块属性）
+    config.SORT_TYPE = str(opts["xhs_sort"])
+    config.PUBLISH_TIME_TYPE = int(opts["dy_publish_time"])
+    config.WEIBO_SEARCH_TYPE = str(opts["wb_search_type"])
     config.SQLITE_DB_PATH = str(db_path)
     config.sqlite_db_config["db_path"] = str(db_path)
     if keywords is not None:
@@ -563,6 +576,7 @@ def apply_config(
         "effective_max_notes": int(config.CRAWLER_MAX_NOTES_COUNT),
         "comments": bool(comments),
         "max_comments": int(max_comments),
+        "options": {key: value for key, value in opts.items() if key not in crawl_options.SIDECAR_ONLY_KEYS},
     }
 
 # --------------------------------------------------------------------------------------

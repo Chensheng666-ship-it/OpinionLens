@@ -2320,6 +2320,43 @@ def test_network_module_hook_idempotent() -> None:
     )
 
 
+def test_heavy_import_stubs() -> None:
+    """冷启动加速：词云 / MongoDB 重模块被占位，且被实例化时明确报错（不静默）。"""
+    import os as _os
+    import sys as _sys
+
+    from adapters import base as _base
+
+    saved = {name: _sys.modules.pop(name, None) for name in _base.HEAVY_IMPORT_STUBS}
+    old_env = _os.environ.pop("ENGINE_STUB_HEAVY_IMPORTS", None)
+    try:
+        installed = _base.install_heavy_import_stubs()
+        check("重模块占位: 放入 tools.words / database.mongodb_store_base", set(installed) == set(_base.HEAVY_IMPORT_STUBS), str(installed))
+        words = _sys.modules["tools.words"]
+        check("重模块占位: 提供被 import 的类名", hasattr(words, "AsyncWordCloudGenerator") and hasattr(_sys.modules["database.mongodb_store_base"], "MongoDBStoreBase"))
+        raised = ""
+        try:
+            words.AsyncWordCloudGenerator()
+        except RuntimeError as exc:
+            raised = str(exc)
+        check("重模块占位: 实例化时明确报错（含开关提示）", "ENGINE_STUB_HEAVY_IMPORTS=0" in raised, raised)
+        check("重模块占位: 已存在的模块不覆盖（幂等）", _base.install_heavy_import_stubs() == [])
+        for name in _base.HEAVY_IMPORT_STUBS:
+            _sys.modules.pop(name, None)
+        _os.environ["ENGINE_STUB_HEAVY_IMPORTS"] = "0"
+        check("重模块占位: ENGINE_STUB_HEAVY_IMPORTS=0 可关闭", _base.install_heavy_import_stubs() == [])
+    finally:
+        for name in _base.HEAVY_IMPORT_STUBS:
+            _sys.modules.pop(name, None)
+        for name, module in saved.items():
+            if module is not None:
+                _sys.modules[name] = module
+        if old_env is None:
+            _os.environ.pop("ENGINE_STUB_HEAVY_IMPORTS", None)
+        else:
+            _os.environ["ENGINE_STUB_HEAVY_IMPORTS"] = old_env
+
+
 def test_split_facade_exports_and_login_size() -> None:
     """拆分后门面导出齐全、签名不变；login.py 瘦身且职责收敛。"""
     import inspect
@@ -2421,6 +2458,7 @@ def main() -> int:
         test_manual_module_detection,
         test_network_module_hook_idempotent,
         test_split_facade_exports_and_login_size,
+        test_heavy_import_stubs,
     ]
     for test in tests:
         print(f"\n--- {test.__name__} ---")

@@ -1432,6 +1432,8 @@ def phase1(ctx: Ctx) -> Dict[str, Any]:
         "max_notes": 3,
         "comments": False,
         "max_comments": 0,
+        # 串行语义：断言「第二个平台未执行 → skipped」（并行默认 3 时 dy 会与 xhs 同时启动）
+        "options": {"platform_parallel": 1},
     }
     slow_run = ctx.call_no_busy("POST", "/api/runs", body=slow_body)
     slow_run_id = slow_run["run_id"]

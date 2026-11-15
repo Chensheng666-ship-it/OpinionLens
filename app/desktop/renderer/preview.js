@@ -346,6 +346,7 @@
         max_notes: params.max_notes,
         comments: !!params.comments,
         max_comments: params.max_comments,
+        options: params.options || undefined,
         name: params.name || ''
       },
       account_policy: params.account_policy || { mode: 'auto', strategy: 'lru' },

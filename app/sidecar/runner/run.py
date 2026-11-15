@@ -17,6 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
+from crawl_options_loader import crawl_options
 from events import bus
 from state import StateStore, now_ts
 
@@ -54,13 +55,36 @@ class RunRuntime:
     account_policy: Dict[str, Any] = field(default_factory=dict)
     resume_accounts: Dict[str, str] = field(default_factory=dict)
     stop_event: threading.Event = field(default_factory=threading.Event)
-    process: Optional[CrawlHandle] = None
+    # 平台并行：每个平台一个引擎句柄（platform -> handle）
+    processes: Dict[str, CrawlHandle] = field(default_factory=dict)
     process_lock: threading.RLock = field(default_factory=threading.RLock)
     results_lock: threading.RLock = field(default_factory=threading.RLock)
     platform_results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     saved_counts: Dict[str, int] = field(default_factory=dict)
     finished: bool = False
     thread: Optional[threading.Thread] = None
+    parallel: int = 1
+
+    @property
+    def process(self) -> Optional[CrawlHandle]:
+        """兼容旧单句柄读取：返回任一运行中的句柄（串行时即唯一句柄）。"""
+        with self.process_lock:
+            for handle in self.processes.values():
+                return handle
+        return None
+
+    def running_handles(self) -> List[CrawlHandle]:
+        with self.process_lock:
+            return list(self.processes.values())
+
+    @property
+    def is_parallel(self) -> bool:
+        """真正会并发：并行度 > 1 且平台数 > 1（单平台任务日志格式保持旧版）。"""
+        return self.parallel > 1 and len(self.platforms) > 1
+
+    def log_prefix(self, platform: str) -> str:
+        """并行时 sidecar 自身的平台日志也加 ``[platform] `` 前缀（与引擎输出行一致）。"""
+        return f"[{platform}] " if self.is_parallel else ""
 
 def _is_retryable_crawl_error(message: str) -> bool:
     """判断采集失败是否为可自动重试的瞬时网络/浏览器错误。
@@ -121,7 +145,7 @@ def _is_retryable_crawl_error(message: str) -> bool:
     return any(token in text or token in lowered for token in retryable)
 
 class RunManager:
-    """采集任务编排：按平台串行跑 engine crawl，单平台失败继续。"""
+    """采集任务编排：按平台并行（默认 3 个）跑 engine crawl，单平台失败继续。"""
 
     def __init__(
         self,
@@ -180,6 +204,24 @@ class RunManager:
             raise ServiceError("INVALID_PARAMS", "account_policy.mode=manual 时必须指定 account_ids", 400)
         return {"mode": mode, "strategy": strategy, "account_ids": account_ids}
 
+    @staticmethod
+    def _parallel_for(params: Dict[str, Any]) -> int:
+        """平台并行度：options.platform_parallel（缺省 3）；环境变量 SIDECAR_PLATFORM_PARALLEL 可覆盖上限。
+
+        旧任务 params 没有 options 时同样取默认值（续采也能享受并行）。
+        """
+        try:
+            value = crawl_options.platform_parallel(params.get("options") or {})
+        except ValueError:
+            value = crawl_options.DEFAULT_PLATFORM_PARALLEL
+        raw_cap = os.environ.get("SIDECAR_PLATFORM_PARALLEL", "").strip()
+        if raw_cap:
+            try:
+                value = min(value, max(1, int(raw_cap)))
+            except ValueError:
+                pass
+        return max(1, min(int(value), crawl_options.MAX_PLATFORM_PARALLEL))
+
     def _aliases(self) -> Dict[str, str]:
         if self.accounts is None:
             return {}
@@ -216,6 +258,7 @@ class RunManager:
                 expected_items=expected_items,
                 sink=sink,
                 account_policy=account_policy,
+                parallel=self._parallel_for(params),
             )
             self.state.create_run(
                 run_id=run_id,
@@ -238,7 +281,8 @@ class RunManager:
         sink.append(
             f"[sidecar] 创建采集任务 run_id={run_id} platforms={','.join(platforms)} "
             f"keywords={','.join(keywords)} max_notes={params.get('max_notes')} "
-            f"account_policy={json.dumps(account_policy, ensure_ascii=False)}"
+            f"account_policy={json.dumps(account_policy, ensure_ascii=False)} "
+            f"options={json.dumps(crawl_options.effective_options(params.get('options') or {}), ensure_ascii=False, sort_keys=True)}"
         )
         thread = threading.Thread(target=self._worker, args=(rt,), name=f"run-{run_id}", daemon=True)
         rt.thread = thread
@@ -357,6 +401,7 @@ class RunManager:
                 expected_items=expected_items,
                 sink=sink,
                 resume=True,
+                parallel=self._parallel_for(fresh["params"]),
                 account_policy=dict(resume_policy or {}),
                 resume_accounts={
                     platform: account_id
@@ -416,9 +461,8 @@ class RunManager:
             # 已结束：幂等返回 ok（UI 可能停止按钮点晚）
             return {"ok": True}
         rt.stop_event.set()
-        with rt.process_lock:
-            proc = rt.process
-        self.backend.stop(proc)
+        for proc in rt.running_handles():
+            self.backend.stop(proc)
         rt.sink.append("[sidecar] 收到停止请求，正在终止引擎…")
         return {"ok": True}
 
@@ -467,9 +511,8 @@ class RunManager:
             if rt.finished:
                 continue
             rt.stop_event.set()
-            with rt.process_lock:
-                proc = rt.process
-            self.backend.stop(proc)
+            for proc in rt.running_handles():
+                self.backend.stop(proc)
         deadline = time.monotonic() + 8.0
         for rt in runtimes:
             if rt.thread is not None:
@@ -494,25 +537,58 @@ class RunManager:
             if rt is not None:
                 rt.sink.close()
 
+    def _run_platform_slot(self, rt: RunRuntime, platform: str) -> None:
+        """线程池里的一个平台：已取消则标 skipped；单平台异常只让该平台失败，不拖垮其它平台。"""
+        if rt.stop_event.is_set():
+            self.state.update_platform(
+                rt.run_id,
+                platform,
+                status="skipped",
+                message="已取消，未执行",
+                finished_at=now_ts(),
+            )
+            return
+        try:
+            self._run_one_platform(rt, platform)
+        except Exception as exc:  # noqa: BLE001 - 并行时单平台编排异常隔离到该平台
+            log.exception("采集任务 %s 平台 %s 编排异常", rt.run_id, platform)
+            self.state.update_platform(
+                rt.run_id,
+                platform,
+                status="failed",
+                message=f"编排异常：{exc}"[:1000],
+                finished_at=now_ts(),
+            )
+            rt.sink.append(f"{rt.log_prefix(platform)}===== [{PLATFORM_LABELS.get(platform, platform)}] 结束：failed 编排异常：{exc} =====")
+
+    def _run_platforms(self, rt: RunRuntime) -> None:
+        """按 ``rt.parallel`` 并行跑各平台（=1 时与旧版串行逐行一致）。
+
+        各平台是不同站点、不同账号，并行不增加单账号风控风险；同一账号仍由
+        ``guard.acquire_account`` 互斥，MediaCrawler sqlite 写入由 busy_timeout 串行化。
+        """
+        if not rt.is_parallel:
+            for platform in rt.platforms:
+                self._run_platform_slot(rt, platform)
+            return
+        from concurrent.futures import ThreadPoolExecutor
+
+        workers = min(rt.parallel, len(rt.platforms))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"run-{rt.run_id}-pf") as pool:
+            futures = [pool.submit(self._run_platform_slot, rt, platform) for platform in rt.platforms]
+            for future in futures:
+                future.result()
+
     def _worker(self, rt: RunRuntime) -> None:
         final_status = RUN_STATUS_DONE
         current_platform: Optional[str] = None
         try:
-            for platform in rt.platforms:
-                current_platform = platform
-                if rt.stop_event.is_set():
-                    self.state.update_platform(
-                        rt.run_id,
-                        platform,
-                        status="skipped",
-                        message="已取消，未执行",
-                        finished_at=now_ts(),
-                    )
-                    continue
-                self._run_one_platform(rt, platform)
-                if rt.stop_event.is_set():
-                    # 后续平台在下一轮循环开头被标记 skipped
-                    continue
+            if rt.is_parallel:
+                rt.sink.append(
+                    f"[sidecar] 平台并行：同时运行 {min(rt.parallel, len(rt.platforms))} 个平台"
+                    f"（共 {len(rt.platforms)} 个）；日志行以 [平台] 前缀区分"
+                )
+            self._run_platforms(rt)
             run_error: Optional[str] = None
             if rt.stop_event.is_set():
                 final_status = RUN_STATUS_CANCELLED
@@ -557,7 +633,7 @@ class RunManager:
             rt.finished = True
             rt.sink.append(f"===== 采集任务 {rt.run_id} 结束：{final_status} =====")
             with rt.process_lock:
-                rt.process = None
+                rt.processes.clear()
             self.guard.release_exclusive(rt.run_id)
             self._publish_run_event(rt, final_status)
             with self._lock:
@@ -641,6 +717,10 @@ class RunManager:
         except Exception:  # noqa: BLE001 - 通知事件失败不能影响采集任务收尾
             log.exception("发布 run 事件失败：%s", rt.run_id)
 
+    def _plog(self, rt: RunRuntime, platform: str, text: str) -> None:
+        """平台级日志：并行时加 ``[platform] `` 前缀（空行不加，保持分段观感）。"""
+        rt.sink.append((rt.log_prefix(platform) + text) if text else text)
+
     def _run_platform_with_retries(
         self,
         rt: RunRuntime,
@@ -698,9 +778,9 @@ class RunManager:
                 message=retry_message,
                 finished_at=None,
             )
-            rt.sink.append("")
-            rt.sink.append(f"===== [{label}] 自动重试 {attempt}/{max_retries}，{int(delay)} 秒后重新采集 =====")
-            rt.sink.append(f"      原因：{message[:500]}")
+            self._plog(rt, platform, "")
+            self._plog(rt, platform, f"===== [{label}] 自动重试 {attempt}/{max_retries}，{int(delay)} 秒后重新采集 =====")
+            self._plog(rt, platform, f"      原因：{message[:500]}")
             deadline = time.monotonic() + delay
             while time.monotonic() < deadline:
                 if rt.stop_event.wait(0.5):
@@ -726,10 +806,10 @@ class RunManager:
                 selected = self.accounts.pick_manual(platform, resume_id)
                 selected["strategy"] = "resume"
                 selected["reasons"] = ["续采：沿用上次采集账号"] + list(selected.get("reasons") or [])
-                rt.sink.append(f"[sidecar] 续采：优先沿用原账号 {resume_id}")
+                self._plog(rt, platform, f"[sidecar] 续采：优先沿用原账号 {resume_id}")
                 return selected
             except ServiceError as exc:
-                rt.sink.append(f"[sidecar] 续采原账号 {resume_id} 不可用（{exc.message}），重新选号")
+                self._plog(rt, platform, f"[sidecar] 续采原账号 {resume_id} 不可用（{exc.message}），重新选号")
         if mode == "manual":
             account_id = str(manual_ids.get(platform) or "")
             if not account_id:
@@ -747,7 +827,7 @@ class RunManager:
             fallback = self.accounts.legacy_fallback(platform, exclude=tried)
             if fallback is None:
                 raise
-            rt.sink.append(
+            self._plog(rt, platform, 
                 "[sidecar] 旧单账号兼容：legacy 默认账号登录态未确认，沿用旧行为继续采集"
             )
             return fallback
@@ -764,8 +844,9 @@ class RunManager:
             max_attempts = 2
         max_attempts = max(1, min(max_attempts, 5))
         tried: List[str] = []
-        failover_aliases: List[str] = []
-        last_alias = ""
+        # 实际跑过引擎的账号（按顺序）；只有 ≥2 个时才算「切换过账号」
+        ran_aliases: List[str] = []
+        no_more_accounts = ""
         label = PLATFORM_LABELS.get(platform, platform)
         # 续采/同 run 重跑时 attempt 序号从已有最大值继续（避免覆盖 run_accounts 历史）
         attempt_base = self.accounts.max_attempt(rt.run_id, platform)
@@ -789,14 +870,16 @@ class RunManager:
                         message=message[:1000],
                         finished_at=now_ts(),
                     )
-                    rt.sink.append(f"===== [{label}] {message} =====")
+                    self._plog(rt, platform, f"===== [{label}] {message} =====")
+                else:
+                    # 换号时已没有其它可用账号：如实说明，不再假装「已切换」
+                    no_more_accounts = exc.message
                 break
             account = selected.get("account") or {}
             account_id = str(selected.get("account_id") or account.get("account_id") or "")
             alias = str(
                 selected.get("alias") or account.get("display_alias") or account.get("alias") or account_id
             )
-            last_alias = alias
             pick_reason = str(selected.get("strategy") or "auto")
             engine_args = self.accounts.engine_account_args(account)
             account_busy = (
@@ -804,7 +887,7 @@ class RunManager:
             )
             if account_busy:
                 message = f"账号 {alias} 正在被占用：{account_busy}"
-                rt.sink.append(f"===== [{label}] {message} =====")
+                self._plog(rt, platform, f"===== [{label}] {message} =====")
                 if not tried:
                     self.state.update_platform(
                         rt.run_id,
@@ -818,7 +901,8 @@ class RunManager:
                 self.accounts.mark_attempt(
                     rt.run_id, platform, attempt_no, account_id, reason=pick_reason
                 )
-                rt.sink.append(
+                ran_aliases.append(alias)
+                self._plog(rt, platform, 
                     f"===== [{label}] 第 {attempt_no} 次尝试：账号 {alias}"
                     f"（{account_id or '-'}，原因={pick_reason}）====="
                 )
@@ -852,22 +936,25 @@ class RunManager:
                     break
                 if kind in ("login_invalid", "risk_blocked") and attempt < max_attempts:
                     tried.append(account_id)
-                    failover_aliases.append(alias)
-                    rt.sink.append(
-                        f"[sidecar] 账号 {alias} 失败（{kind}: {message[:120]}）→ 自动切换下一个账号"
+                    self._plog(rt, platform, 
+                        f"[sidecar] 账号 {alias} 失败（{kind}: {message[:120]}）→ 尝试切换下一个账号"
                     )
                     continue
                 break
             finally:
                 if account_id:
                     self.guard.release_account(account_id, rt.run_id)
-        if failover_aliases and not rt.stop_event.is_set():
+        note = ""
+        if len(ran_aliases) > 1:
+            note = "已自动切换账号：" + " → ".join(ran_aliases)
+        elif ran_aliases and no_more_accounts:
+            note = "没有其它可用账号可切换，请先在「账号」页登录或添加账号"
+        if note and not rt.stop_event.is_set():
             row = self._platform_row(rt.run_id, platform) or {}
-            note = "已自动切换账号：" + "、".join(failover_aliases) + f" → {last_alias}"
             if row.get("status") in ("failed", "done"):
                 merged = (str(row.get("message") or "") + f"（{note}）")[:1000]
                 self.state.update_platform(rt.run_id, platform, message=merged)
-                rt.sink.append(f"===== [{label}] {note} =====")
+                self._plog(rt, platform, f"===== [{label}] {note} =====")
 
     def _platform_row(self, run_id: str, platform: str) -> Optional[Dict[str, Any]]:
         run = self.state.get_run(run_id) or {}
@@ -907,8 +994,8 @@ class RunManager:
         )
         with rt.results_lock:
             rt.platform_results.pop(platform, None)
-        rt.sink.append("")
-        rt.sink.append(
+        self._plog(rt, platform, "")
+        self._plog(rt, platform, 
             f"===== [{label}] 开始采集 platform={platform} "
             f"account={engine_account_id or 'legacy'} attempt={account_attempt} ====="
         )
@@ -922,6 +1009,8 @@ class RunManager:
                     "max_comments": _to_int(rt.params.get("max_comments"), 20),
                     "account_id": engine_account_id,
                     "profile_template": profile_template,
+                    "options": crawl_options.engine_options(rt.params.get("options") or {}),
+                    "line_prefix": rt.is_parallel,
                 },
                 sink=rt.sink,
                 on_event=lambda evt: self._on_crawl_event(rt, platform, evt),
@@ -934,7 +1023,7 @@ class RunManager:
                 message=f"引擎启动失败：{exc}",
                 finished_at=now_ts(),
             )
-            rt.sink.append(f"===== [{label}] 引擎启动失败：{exc} =====")
+            self._plog(rt, platform, f"===== [{label}] 引擎启动失败：{exc} =====")
             return
         except Exception as exc:  # noqa: BLE001
             log.exception("启动采集引擎异常：%s", platform)
@@ -945,11 +1034,11 @@ class RunManager:
                 message=f"引擎启动异常：{exc}",
                 finished_at=now_ts(),
             )
-            rt.sink.append(f"===== [{label}] 引擎启动异常：{exc} =====")
+            self._plog(rt, platform, f"===== [{label}] 引擎启动异常：{exc} =====")
             return
 
         with rt.process_lock:
-            rt.process = proc
+            rt.processes[platform] = proc
         timed_out = False
         try:
             deadline = time.monotonic() + float(self.cfg.crawl_timeout)
@@ -966,7 +1055,7 @@ class RunManager:
             proc.wait(10)
         finally:
             with rt.process_lock:
-                rt.process = None
+                rt.processes.pop(platform, None)
 
         if rt.stop_event.is_set():
             self.state.update_platform(
@@ -976,7 +1065,7 @@ class RunManager:
                 message="已取消",
                 finished_at=now_ts(),
             )
-            rt.sink.append(f"===== [{label}] 已取消 =====")
+            self._plog(rt, platform, f"===== [{label}] 已取消 =====")
             return
 
         with rt.results_lock:
@@ -1004,7 +1093,7 @@ class RunManager:
             fields["progress"] = 100
             fields["stage"] = "done"
         self.state.update_platform(rt.run_id, platform, **fields)
-        rt.sink.append(f"===== [{label}] 结束：{status} {message} =====")
+        self._plog(rt, platform, f"===== [{label}] 结束：{status} {message} =====")
 
     def _on_crawl_event(self, rt: RunRuntime, platform: str, event: Dict[str, Any]) -> None:
         event_type = str(event.get("type") or "")
@@ -1138,6 +1227,8 @@ class EngineProcessBackend:
             on_event=on_event,
             account_id=str(params.get("account_id") or ""),
             profile_template=str(params.get("profile_template") or ""),
+            options=dict(params.get("options") or {}),
+            line_prefix=bool(params.get("line_prefix")),
         )
 
     def stop(self, handle: Optional[CrawlHandle]) -> None:

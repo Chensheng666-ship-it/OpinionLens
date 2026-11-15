@@ -5,7 +5,7 @@
 
     python app/engine/entry.py --mode login --platform xhs              --data-dir <abs> [--headless true] [--timeout 300]
     python app/engine/entry.py --mode test  --platform xhs              --data-dir <abs>
-    python app/engine/entry.py --mode crawl --platform xhs --keywords "示例科技" --max-notes 15 --comments true --max-comments 20 --data-dir <abs>
+    python app/engine/entry.py --mode crawl --platform xhs --keywords "示例科技" --max-notes 15 --comments true --max-comments 20 --data-dir <abs> [--options-json '{"request_interval":1.5}']
 
 结构化事件逐行输出：##EVENT##{"type":"...", ...}
 最后一行必为 engine.finished（成功/失败都会发；失败时进程退出码仍为 0，由 sidecar 以事件为准）。
@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import signal
 import sys
@@ -57,6 +58,7 @@ def _configure_javascript_runtime() -> None:
 
 _configure_javascript_runtime()
 
+import crawl_options  # noqa: E402  （engine 本地模块，只依赖标准库）
 import patches  # noqa: E402  （engine 本地模块，顶层只依赖标准库）
 
 
@@ -110,7 +112,17 @@ def parse_args(argv=None):
         default=None,
         help="账号 profile 目录模板（含恰好一个 %%s 的绝对路径，%%s 由 MediaCrawler 替换为平台名）",
     )
+    parser.add_argument(
+        "--options-json",
+        default="",
+        help='采集高级参数 JSON（crawl 模式；键见 crawl_options.OPTION_SPECS，如 {"request_interval":1.5,"concurrency":2}）',
+    )
     args = parser.parse_args(argv)
+    try:
+        raw_options = json.loads(args.options_json) if str(args.options_json or "").strip() else {}
+        args.options = crawl_options.engine_options(raw_options)
+    except ValueError as exc:  # json.JSONDecodeError 也是 ValueError
+        parser.error(f"--options-json 无效：{exc}")
     args.comments = str2bool(args.comments)
     args.headless = None if args.headless is None else str2bool(args.headless)
     try:
@@ -281,7 +293,9 @@ async def _crawl_async(mc, args, data_dir: Path, emitter: patches.EventEmitter) 
         max_comments=args.max_comments,
         account_id=args.account_id,
         profile_template=args.profile_template,
+        options=args.options,
     )
+    print(f"[engine] 采集参数：{json.dumps(info.get('options') or {}, ensure_ascii=False)}", flush=True)
     patches.patch_browser_channel()
     patches.patch_login_blocked(mc, args.platform)
     patches.install_network_error_hook()
