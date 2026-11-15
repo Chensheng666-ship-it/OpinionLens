@@ -20,7 +20,7 @@ import os
 from typing import Optional
 
 #: ``package.json`` 版本不可用时的回退值（需与 package.json 保持一致）
-FALLBACK_VERSION = "0.6.0"
+FALLBACK_VERSION = "0.7.0"
 
 
 def app_version(env: Optional[dict] = None) -> str:
