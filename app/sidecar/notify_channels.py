@@ -398,6 +398,28 @@ def validate_config(
             _str_value(source, "from", "from_addr", "from_email", "sender"), "发件人地址（from）"
         )
         to_addrs = _normalize_to_addrs(source.get("to", source.get("to_addrs")))
+        if username:
+            # 主流服务商（163/QQ/Gmail/企业邮）都要求「登录名 = 完整邮箱」且「发件人 = 登录名」；
+            # 非 ASCII 用户名还会让 smtplib 在 AUTH 编码时抛 UnicodeEncodeError（显示为 ascii codec 错误）。
+            # 在保存阶段就给出明确提示，避免到服务器才报 535 / 553。
+            try:
+                username.encode("ascii")
+            except UnicodeEncodeError as exc:
+                raise ChannelConfigError(
+                    f"SMTP 用户名只能是英文邮箱地址（如 {from_addr}），不能包含中文：{username[:80]}"
+                ) from exc
+            if "@" not in username:
+                raise ChannelConfigError(
+                    f"SMTP 用户名应填写完整邮箱地址（通常与发件人相同：{from_addr}），当前为：{username[:80]}"
+                )
+            if username.lower() != from_addr.lower():
+                raise ChannelConfigError(
+                    f"发件人（{from_addr}）必须与 SMTP 用户名（{username[:80]}）一致，"
+                    "否则 163/QQ 等服务商会拒绝投递（553 Mail from must equal authorized user）"
+                )
+        elif raw_secret:
+            # 填了授权码但用户名留空：按发件人地址登录（与服务商要求一致）
+            username = from_addr
         if require_secret and username and not raw_secret:
             raise ChannelConfigError("SMTP 已填写用户名，必须同时填写授权码/密码")
         timeout = source.get("timeout") or DEFAULT_TIMEOUT
@@ -639,6 +661,8 @@ def _send_smtp(
     port = int(normalized["port"])
     security = str(normalized["security"])
     username = str(normalized.get("username") or "")
+    if not username and secret:
+        username = str(normalized.get("from") or "")
     message = _smtp_message(normalized, title, body)
     client: Any = None
     try:

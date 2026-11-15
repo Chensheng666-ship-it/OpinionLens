@@ -1278,7 +1278,7 @@
           id: 'ch-security', label: '加密方式', value: cfg.security || 'ssl',
           options: [{ value: 'ssl', label: 'SSL（465）' }, { value: 'starttls', label: 'STARTTLS（587）' }, { value: 'none', label: '无加密（内网）' }]
         }) +
-        FS.ui.fieldHtml({ id: 'ch-username', label: '用户名', value: cfg.username || '', placeholder: '通常与发件人邮箱相同', hint: '留空则匿名发信（多数服务商不允许）。' }) +
+        FS.ui.fieldHtml({ id: 'ch-username', label: '用户名', value: cfg.username || '', placeholder: '填完整邮箱，与发件人相同', hint: '163/QQ 等须填完整邮箱且与发件人一致；留空则按发件人地址登录。' }) +
         '</div>');
       f.push('<div class="form-cols">' +
         FS.ui.fieldHtml({ id: 'ch-from', label: '发件人', value: cfg.from || '', placeholder: 'monitor@example.com' }) +

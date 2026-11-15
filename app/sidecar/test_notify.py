@@ -293,10 +293,36 @@ def test_validation(root: str, server: FakeNotifyServer) -> None:
         "SMTP 有用户名但缺密码被拒绝",
         lambda: notify_channels.validate_config(
             "smtp",
-            {"host": "smtp.example.com", "username": "u", "from": "a@b.com", "to": ["c@d.com"]},
+            {"host": "smtp.example.com", "username": "a@b.com", "from": "a@b.com", "to": ["c@d.com"]},
             "",
         ),
     )
+    # 163/QQ 实测踩坑：用户名非邮箱 → 535；用户名 ≠ 发件人 → 553；中文用户名 → ascii codec 异常
+    for label, username in (
+        ("SMTP 用户名不是邮箱被拒绝（避免 535）", "OpinionLens"),
+        ("SMTP 用户名与发件人不一致被拒绝（避免 553）", "other@b.com"),
+        ("SMTP 中文用户名被拒绝（避免 ascii codec 异常）", "监控邮箱"),
+    ):
+        expect_error(
+            label,
+            lambda username=username: notify_channels.validate_config(
+                "smtp",
+                {"host": "smtp.example.com", "username": username, "from": "a@b.com", "to": ["c@d.com"]},
+                "authcode1234",
+            ),
+        )
+    smtp_same_case = notify_channels.validate_config(
+        "smtp",
+        {"host": "smtp.example.com", "username": "A@B.com", "from": "a@b.com", "to": ["c@d.com"]},
+        "authcode1234",
+    )
+    check("SMTP 用户名与发件人大小写不同视为一致", smtp_same_case["username"] == "A@B.com")
+    smtp_blank_user = notify_channels.validate_config(
+        "smtp",
+        {"host": "smtp.example.com", "from": "a@b.com", "to": ["c@d.com"]},
+        "authcode1234",
+    )
+    check("SMTP 用户名留空 + 有授权码 → 按发件人登录", smtp_blank_user["username"] == "a@b.com", str(smtp_blank_user))
     normalized_smtp = notify_channels.validate_config(
         "smtp",
         {
@@ -626,7 +652,8 @@ def test_quiet_hours(root: str, server: FakeNotifyServer) -> None:
         check("自定义窗口 12:30 不抑制 warn", svc._quiet_reason("warn", _local_ts(12, 30)) == "")
         check("自定义窗口 14:00 不抑制", svc._quiet_reason("info", _local_ts(14, 0)) == "")
 
-        # muted_until
+        # muted_until：先清空静默时段，避免真实当前时刻落在上面 12:00-13:00 窗口里（中午跑测试会误判）
+        client.put("/api/notify/settings", json={"quiet_hours": []})
         client.put("/api/notify/settings", json={"muted_until": int(time.time()) + 3600})
         check("muted_until 抑制 info", svc._quiet_reason("warn") == "muted_until")
         check("muted_until 不拦 error", svc._quiet_reason("error") == "")
