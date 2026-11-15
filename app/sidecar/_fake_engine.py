@@ -611,25 +611,27 @@ def _write_douyin(
     return {"notes": items, "comments": comment_count}
 
 
-def _attempts_path(data_dir: Path) -> Path:
-    return data_dir / "logs" / "fake_crawl_attempts.json"
+def _attempts_path(data_dir: Path, platform: str) -> Path:
+    # 每个平台一个计数文件：平台并行时多个 fake engine 进程同时运行，共用一个 JSON
+    # 做「读-改-写」会互相覆盖（丢计数 → FAIL_ONCE 多失败一次）。同一平台同一时刻
+    # 只有一个引擎进程，按平台拆文件即可消除竞争。
+    return data_dir / "logs" / f"fake_crawl_attempts_{platform}.txt"
 
 
 def _bump_crawl_attempt(data_dir: Path, platform: str) -> int:
     """记录每个平台被 crawl 的次数（用于 FAIL_ONCE：前 N 次失败，之后成功，模拟断点续采）。"""
-    path = _attempts_path(data_dir)
+    path = _attempts_path(data_dir, platform)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data: Dict[str, Any] = {}
+    attempts = 0
     try:
         if path.is_file():
-            data = json.loads(path.read_text(encoding="utf-8")) or {}
-    except Exception:  # noqa: BLE001
-        data = {}
-    attempts = int(data.get(platform, 0) or 0) + 1
-    data[platform] = attempts
+            attempts = int(path.read_text(encoding="utf-8").strip() or 0)
+    except (OSError, ValueError):
+        attempts = 0
+    attempts += 1
     try:
-        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    except Exception:  # noqa: BLE001
+        path.write_text(str(attempts), encoding="utf-8")
+    except OSError:
         pass
     return attempts
 
