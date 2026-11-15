@@ -12,7 +12,7 @@
 [![CI](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SolitudeZY/OpinionLens/actions/workflows/ci.yml)
 [![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](app/desktop/package.json)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](app/sidecar/README.md)
-[![Release](https://img.shields.io/badge/release-0.5.0-blue)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-0.6.0-blue)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 </div>

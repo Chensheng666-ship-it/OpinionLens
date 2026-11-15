@@ -2,6 +2,48 @@
 
 本项目自开源基线 0.1.0 起按版本记录变更。
 
+## 0.6.0 · 2026-11-15（工程化重构：模块拆分 · 增量轮询 · 类型全绿 · 安装包瘦身）
+
+本轮没有堆新功能，而是把 0.5.0 之后快速长出来的代码重新整形——目标只有一个：**让它能被长期维护**。
+重构后功能行为保持不变（离线自测 207 项、账号池 256 项、导出 233 项、报告 124 项、通知 248 项、
+模型 API 85 项、引擎 212 项、RunManager 38 项全绿，Electron 端到端 9 项断言全绿）。
+
+**引擎层：从 monkeypatch 大杂烩到可探测的适配器**
+- `patches.py` 2617 → **703 行门面**，实现拆到 `app/engine/adapters/`（base/session/browser/content/qr/manual/network/login + 7 个平台适配器）
+- 新增**上游契约探测**：74 项符号 / 10 组，启动时真实 import + getattr 链校验；缺失即
+  `ENGINE_INCOMPATIBLE`（明确报缺失项 + 重装指引），进程退出码 2——不再出现「补丁打空枪、界面显示采集完成 0 条」
+- `except: pass` 从 23 处归零：必需补丁失败抛 `EnginePatchError`，可选补丁发 `warning` 事件并计数
+- 引入 `PatchSession`（每运行一个会话）：修掉 `instrument_login_class` 重复包装导致事件翻倍、
+  `_WARNED_ONCE` 不随重置清理两处缺陷；登录类契约按 `LOGIN_CLASSES` 自动生成并补齐 ks/wb
+- 探测结果缓存：冷启动 2910ms → **0.47ms**
+
+**Sidecar：拆开上帝模块**
+- `engine_runner.py` 3187 → **21 行门面**，拆为 `runner/{config,process,guard,login,run,service}.py`
+- `RunManager` 改为 `CrawlBackend` 构造注入，不再自己 spawn 进程；新增 `FakeBackend` + 38 条单测（含换号/重试/续采/停止/事件契约）
+- `report_data.py` 1555 → **235 行门面**，拆出 `report_dataset / report_package / report_sentiment / report_common`；
+  数据包用 TypedDict + `REPORT_PACKAGE_INVALID` 校验
+- `exporter.py` 改声明式列规格（`export_specs.py`，14 张表）+ `EXPORT_SCHEMA_MISMATCH` 导出前自检；
+  新旧导出器对同一 fixture 的工作簿 **sha256 完全一致**
+
+**前端：不再整块重绘**
+- 采集动态 `/feed?since_seq=` 增量（item `seq` + `next_seq`，counts 恒全量）、日志 `/logs?after_line=` 增量（环形缓冲）
+- 运行详情改原地补丁：新帖顶部追加、日志底部追加，贴顶/贴底才自动滚动，翻历史不被打断（实测 scrollTop 补偿正确）
+- 抽出 `renderer/ui-kit.js`（9 个工具函数，删掉 11 份重复实现）；`preview.js`（112 KB mock）退出主包，正式运行零加载；
+  9 个 `setInterval` 统一走 `FS.timers`，切页/终态/destroy 全清
+
+**类型与测试护栏**
+- `mypy` 从 **303 → 0 errors / 64 files**（`mypy.ini` + `typing_utils.py`），顺带修 7 个真实缺陷：
+  `report_sentiment.py` 的 `Sequence` 未导入、`platform_douyin.py` 坏签名、`api_pool.py` 传 `{}` 时潜在 500 等
+- 新增 `app/scripts/e2e/`（CDP，零依赖）：9 项断言覆盖就绪状态、IPC、设置页渲染、数据目录校验、增量参数校验、
+  preview 懒加载、ui-kit、timer 泄漏、未捕获 JS 错误；`run_e2e.ps1` 保证 finally 杀干净进程
+- CI 新增 e2e job（no-sidecar），offline 列表补 `test_run_manager.py`
+
+**安装包瘦身**
+- staging 632.78 → **369.7 MB**，安装包 236.9 → **169.8 MB**（−28%），许可证文件 95 个零改动
+- 主要手段：Playwright 自带 node.exe 与 runtime/node 去重（88 MB）、各包 tests / 构建残留 C 源码 / cv2 ffmpeg 后端 /
+  jieba 未用模型 / pip+virtualenv+tcl 等；`__pycache__` 刻意保留（25s 首启超时约束）
+
+
 ## 0.5.0 · 2026-11-14（默认账号改用 v2 独立目录 · 移除「迁移旧目录」）
 
 **产品口径：不再有「旧版目录」这个概念出现在界面上**
