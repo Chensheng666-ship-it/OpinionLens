@@ -72,7 +72,8 @@ jobs:
             'app/sidecar/test_llm.py',
             'app/sidecar/test_account_pool.py',
             'app/sidecar/test_report_data.py',
-            'app/sidecar/test_exporter.py'
+            'app/sidecar/test_exporter.py',
+            'app/sidecar/test_run_manager.py'
           )
           foreach ($t in $tests) {
             Write-Host "=== $t ==="
@@ -82,3 +83,52 @@ jobs:
 
       - name: Sidecar offline selftest
         run: python app/sidecar/selftest.py
+
+  # ---------------------------------------------------------------------------
+  # e2e 冒烟（真实 Electron 窗口 + 主进程 IPC）
+  # 覆盖范围：e2e 只覆盖 UI/IPC —— 窗口加载无未捕获 JS 错误、fsapi.getInfo() 字段、
+  #   设置→关于 两张卡渲染、migrateDataDir 参数校验、preview.js 未静态加载、ui-kit 生效、
+  #   切页后 FS.timers 不泄漏；sidecar 全链路（采集/导出/报告/通知）由 offline-tests job
+  #   的单元测试 + selftest.py 覆盖，不在本 job 重复。
+  # 必须 -NoSidecar：CI 没有 MediaCrawler（非商业许可，不随仓库分发），sidecar 起不来；
+  #   此时「feed 增量参数 400」断言自动记 SKIP，其余断言照跑。
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: E2E smoke (Windows, no sidecar)
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    env:
+      # 与开发环境一致的本地时区（渲染层日期/版本展示依赖本地时间）
+      TZ: Asia/Shanghai
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/desktop/package-lock.json
+
+      - name: Install Electron dependencies
+        working-directory: app/desktop
+        env:
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+          npm_config_registry: https://registry.npmmirror.com
+        run: npm ci
+
+      - name: Run e2e smoke (no sidecar)
+        shell: pwsh
+        run: pwsh -File app/scripts/e2e/run_e2e.ps1 -NoSidecar
+
+      - name: Upload e2e logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ github.run_id }}
+          path: build/e2e/**
+          if-no-files-found: ignore
+          retention-days: 7
