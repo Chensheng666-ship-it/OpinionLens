@@ -302,6 +302,19 @@ cd app\desktop; npm run start:no-sidecar
 - **第三方组件**：Electron、FastAPI、uvicorn、Playwright 等组件的许可证与声明见
   [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
+## 支持这个项目
+
+如果它帮你省了时间，可以请我喝杯咖啡 —— **完全自愿，不影响任何功能，也不提供额外权益**。
+
+<p align="center">
+  <img src="docs/assets/support-wechat.png" width="200" alt="微信赞赏码">
+</p>
+
+<p align="center"><sub>微信扫码即可 · 赞赏仅用于补贴开发与测试时间</sub></p>
+
+> 本项目以 **MIT** 协议开源，采集能力来自 [MediaCrawler](https://github.com/NanmiCoder/MediaCrawler)（非商业学习许可）。
+> **不做付费版本、不接商业采集订单、不投放广告**；代码可自由使用与修改，赞赏与任何功能、授权、技术支持均不挂钩。
+
 ## 友链
 
 <a href="https://linux.do"><img src="https://img.shields.io/badge/%E5%8F%8B%E9%93%BE-linux.do-ffb003?style=flat-square" alt="linux.do" /></a>

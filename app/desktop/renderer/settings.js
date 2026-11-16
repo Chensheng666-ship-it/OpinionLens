@@ -786,6 +786,7 @@
         '<p><b>舆见 OpinionLens</b> 以 <b>MIT</b> 协议开源：可自由使用、修改与再分发，请保留版权与许可声明；软件按「现状」提供，不附带任何明示或默示担保。</p>' +
         '<p>采集能力基于 <b>MediaCrawler</b>（其许可为非商业使用许可）。使用者需自行遵守 MediaCrawler 的许可条款、目标平台的服务条款与 robots 协议，仅将本工具用于合法合规的公开信息研究；因违规使用产生的责任由使用者自行承担。</p>' +
         '<p>本应用所有数据与密钥均存储在本机（<code>%APPDATA%\\OpinionLens</code> 或仓库内 <code>app/data/</code>），不上传云端；通知推送仅在用户显式配置通道后外发最小化事件内容。</p>' +
+        '<p><b>非商业声明</b>：本项目不做付费版本、不接商业采集订单、不投放广告；赞赏与任何功能、授权、技术支持均不挂钩。</p>' +
       '</div>' +
     '</section>';
     body += '<section class="card">' +
@@ -795,7 +796,54 @@
         '<p>通知外发默认使用最小化隐私模板（事件类型 / 平台 / 状态 / 条数 / 时间），不包含关键词原文、昵称与评论正文。</p>' +
       '</div>' +
     '</section>';
+    body += supportCardHtml();
     return '<div class="settings-stack">' + body + '</div>';
+  }
+
+  /* ---------- 关于：支持这个项目（只放文案与链接，不内嵌收款码） ---------- */
+  /**
+   * 收款码只在 README / Release 说明里展示：软件界面内出现二维码容易被误认为「收费软件」，
+   * 也会让审核方误判为商业用途。这里只给入口链接，语义由 README 的「支持这个项目」一节承担。
+   */
+  function supportCardHtml() {
+    var info = FS.info || {};
+    var repo = String(info.updateRepo || 'SolitudeZY/OpinionLens');
+    return '<section class="card">' +
+      '<div class="card-head"><div class="card-title">' + FS.icon('heart') + '支持这个项目</div>' +
+        '<span class="chip chip-muted">自愿赞赏</span></div>' +
+      '<div class="card-body settings-hint-body">' +
+        '<p>如果它帮你省了时间，可以在仓库页面请作者喝杯咖啡 —— <b>完全自愿，不影响任何功能，也不提供额外权益</b>。</p>' +
+        '<p>赞赏仅用于补贴开发与测试时间，与功能解锁、授权、技术支持、需求排期均无关；金额与用途不在应用内展示。</p>' +
+        '<div class="settings-actions actions-left">' +
+          '<button class="btn btn-ghost" data-settings-act="open-support">' + FS.icon('external') + '了解如何支持</button>' +
+          '<button class="btn btn-quiet" data-settings-act="open-repository">' + FS.icon('globe') + '打开仓库</button>' +
+        '</div>' +
+        '<div class="field-hint">目标地址：' + esc('https://github.com/' + repo) + '#支持这个项目</div>' +
+      '</div>' +
+    '</section>';
+  }
+
+  function openSupportPage() {
+    var info = FS.info || {};
+    var repo = String(info.updateRepo || 'SolitudeZY/OpinionLens');
+    openExternalSafe('https://github.com/' + repo + '#支持这个项目', '打开支持说明失败');
+  }
+
+  function openRepositoryPage() {
+    var info = FS.info || {};
+    var repo = String(info.updateRepo || 'SolitudeZY/OpinionLens');
+    openExternalSafe('https://github.com/' + repo, '打开仓库失败');
+  }
+
+  function openExternalSafe(url, errTitle) {
+    if (!hasApi('openExternal')) { previewApiToast('当前环境不支持打开链接'); return; }
+    Promise.resolve().then(function () {
+      return window.fsapi.openExternal(url);
+    }).then(function (res) {
+      if (res && typeof res === 'object' && res.ok === false) throw new Error(res.error || '系统拒绝打开该链接');
+    }).catch(function (err) {
+      FS.toast({ tone: 'error', title: errTitle, text: FS.errText(err, '系统拒绝打开该链接') });
+    });
   }
 
   /* ---------- 关于：数据存储 / 软件更新（卡片渲染，只读 state） ---------- */
@@ -1802,6 +1850,8 @@
       case 'download-update': downloadUpdatePackage(); break;
       case 'run-installer': runInstaller(); break;
       case 'open-release': openReleasePage(); break;
+      case 'open-support': openSupportPage(); break;
+      case 'open-repository': openRepositoryPage(); break;
       case 'dismiss-update': state.update.dismissed = true; renderPanelIfActive('about'); break;
       case 'choose-data-dir': chooseDataDir(); break;
       case 'reset-data-dir': resetDataDir(); break;

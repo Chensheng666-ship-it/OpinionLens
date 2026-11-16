@@ -3,7 +3,7 @@
    断言（默认 full 模式 / -NoSidecar 模式都要绿，sidecar 相关项在 no-sidecar 下记 SKIP）：
      0  窗口就绪：full → FS.mode=real；no-sidecar → FS.mode=offline + 未就绪页
      2  fsapi.getInfo() 返回 appVersion/dataDir/dataDirDefault/userConfigPath/sidecar
-     3  设置→关于 渲染出「检查更新」「数据目录」两张卡
+     3  设置→关于 渲染出「检查更新」「数据目录」「支持这个项目」三张卡（应用内不含收款码）
      4  migrateDataDir 校验：相对路径 / 与当前目录相同
      5  feed 增量参数非法：since_seq=-1 → HTTP 400 invalid_params（无 sidecar 记 SKIP）
      6  preview.js 未随主包加载（无静态 script，正式模式无 FS.PreviewApi）
@@ -131,12 +131,18 @@ async function main() {
       return {
         check: !!document.querySelector('[data-settings-act="check-update"]'),
         dataDir: !!document.querySelector('[data-settings-act="choose-data-dir"]'),
+        support: !!document.querySelector('[data-settings-act="open-support"]'),
+        repo: !!document.querySelector('[data-settings-act="open-repository"]'),
+        qrInApp: !!document.querySelector('img[src$="support-wechat.png"]'),
         tabs: document.querySelectorAll('[data-settings-tab]').length
       };
     })()`);
     if (!probe.check) throw new Error('缺少「检查更新」卡片按钮');
     if (!probe.dataDir) throw new Error('缺少「数据目录」卡片按钮');
-    return { detail: `mount=${mount} · tabs=${probe.tabs} · 两张卡存在` };
+    if (!probe.support) throw new Error('缺少「支持这个项目」卡片入口');
+    if (!probe.repo) throw new Error('缺少「打开仓库」按钮');
+    if (probe.qrInApp) throw new Error('应用内不应内嵌收款码图片（商业观感 / 审核风险）');
+    return { detail: `mount=${mount} · tabs=${probe.tabs} · 三张卡 + 支持入口 · 应用内无收款码` };
   });
 
   /* -------------------------------------------- 4 migrateDataDir 参数校验 */
