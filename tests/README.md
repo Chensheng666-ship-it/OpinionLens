@@ -7,7 +7,7 @@
 
 | 目录 | 内容 | 特点 |
 |---|---|---|
-| `python/` | `test_engine.py`、`test_account_pool.py`、`test_exporter.py`、`test_llm.py`、`test_notify.py`、`test_report_data.py`、`test_run_manager.py`、`selftest.py` | 离线（不联网、不启动真实浏览器）；`selftest.py` 是 sidecar 全链路自测，也会 import 其它测试模块复用断言 |
+| `python/` | `test_engine.py`、`test_account_pool.py`、`test_exporter.py`、`test_llm.py`、`test_notify.py`、`test_report_data.py`、`test_run_manager.py`、`test_sentiment_prompt_isolation.py`、`selftest.py` | 离线（不联网、不启动真实浏览器）；`selftest.py` 是 sidecar 全链路自测，也会 import 其它测试模块复用断言 |
 | `fixtures/` | `_fake_engine.py`、`_fake_exporter.py`、`_fake_llm_server.py`、`_fake_notify_server.py`、`_fake_report_data.py` | 测试替身：假 engine（遵守 CONTRACT §1 事件协议）、假 exporter、进程内假 LLM/通知 HTTP 服务 |
 | `tools/` | `_real_login_check.py`、`_probe_xhs_login.py`、`probe_platform_qr.py`、`diagnose_ks_{api,channel,crawler_flow,pagination,search}.py` | 需要**真实网络 / 真机 Edge / 真实账号**的探针与诊断脚本，不参与自测 |
 | `js/` | `test_update_logic.js` | 更新逻辑（版本比较 / 安装包挑选）纯 Node 单测，无 Electron、无网络 |
@@ -27,6 +27,7 @@ $py = 'D:\OpinionLens\MediaCrawler\.venv\Scripts\python.exe'
 & $py tests\python\test_report_data.py   # 报告数据包 / 情感缓存
 & $py tests\python\test_notify.py        # 通知通道 / outbox / 重试
 & $py tests\python\test_llm.py           # 模型 API / 报告降级
+& $py tests\python\test_sentiment_prompt_isolation.py  # 情感批处理：一条爬取文本不能改写同批其它文本
 & $py tests\python\selftest.py           # sidecar 全链路（起真实 sidecar 子进程 + 假 engine）
 node tests\js\test_update_logic.js       # 更新逻辑（7 条）
 ```
