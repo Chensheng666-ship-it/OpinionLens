@@ -6,7 +6,7 @@
 * ``POST /v1/chat/completions``：OpenAI 兼容（``choices[0].message.content``）；
 * ``POST /v1/messages``：Anthropic 兼容（``content[0].text`` + ``x-api-key``）。
 
-按请求内容自动区分三类调用（由 ``llm_client`` 系统提示词识别）：
+按系统提示词区分三类调用（不看用户 JSON 里偶然出现的「情感分析」字样）：
 
 1. 连接测试（ping）→ 返回 ``pong``；
 2. 情感分析（系统提示词含「情感分析」）→ 解析 user JSON 的 items，按文本关键词给
@@ -244,11 +244,27 @@ class FakeLLMServer:
                     "disclaimer": "本报告统计数字由程序计算，模型仅负责文字叙述。",
                 }
 
+            def _system_text(self, body: Dict[str, Any]) -> str:
+                parts: List[str] = []
+                system = body.get("system")
+                if system is not None:
+                    parts.append(_text_of_content(system))
+                messages = body.get("messages")
+                if isinstance(messages, list):
+                    for item in messages:
+                        if isinstance(item, dict) and str(item.get("role") or "") == "system":
+                            parts.append(_text_of_content(item.get("content")))
+                return "\n".join(parts)
+
             def _build_reply(self, body: Dict[str, Any]) -> str:
                 combined = self._collect_text(body)
+                system_text = self._system_text(body)
                 user_text = self._last_user_text(body)
                 parsed = _extract_first_json(user_text)
-                if "情感分析" in combined:
+                # 任务以系统提示词为准。叙述请求的用户 JSON 会带上统计字段
+                # 「多平台采集与情感分析」，不能因此被当成情感打标。
+                narrative_task = "叙述层" in system_text or "narrative@v1" in system_text
+                if not narrative_task and "情感分析" in (system_text or combined):
                     items = []
                     if isinstance(parsed, dict):
                         items = parsed.get("items") if isinstance(parsed.get("items"), list) else []
