@@ -294,12 +294,17 @@ def preview_run(db_path: str, keywords: list[str], started_ts: int, limit: int =
   `app/desktop/update.js`（纯 Node，可离线单测 `tests/js/test_update_logic.js`）。
   - `app:checkUpdate` → 查 `https://api.github.com/repos/<FS_UPDATE_REPO or SolitudeZY/OpinionLens>/releases/latest`，
     返回 `{ok, current, latest, hasUpdate, releaseUrl, releaseName, notes(≤4000 字), publishedAt,
-    download:{name,size,url}|null, source:'api'|'redirect', warning?, error?}`；
+    download:{name,size,url}|null, verifiable:boolean, source:'api'|'redirect', warning?, error?}`；
     GitHub 匿名 API 限流/不可用时退化为解析 `releases/latest` 的 302 Location 拿 tag（`source:'redirect'`，`download:null`）。
-  - `app:downloadUpdate({url,name})` → 仅允许 https 且 host ∈ {github.com, objects.githubusercontent.com, *githubusercontent.com}；
-    流式下载到 `<tmp>/OpinionLens-update/<name>`，进度通过 `app:updateProgress {received,total,percent}` 推送；
-    落盘后校验 PE 头 `MZ`，不通过则删除并报错。
-  - `app:runUpdateInstaller(path)` → 只允许运行 `<tmp>/OpinionLens-update/` 下的安装包，`shell.openPath` 启动。
+    API 请求只跟随 `api.github.com` 内的跳转，跳到名单外直接报错（不走兜底）。主进程记住本次选中的安装包与
+    同名 `<name>.sig` 签名清单；`verifiable` = 有签名清单且 `update.js` 固定了发布者公钥。
+  - `app:downloadUpdate({url,name})` → `url` 必须等于最近一次 `app:checkUpdate` 选中的安装包地址（`name` 仅兼容旧调用，忽略）；
+    先下载 `<name>.sig` 并用 `UPDATE_SIGNING_PUBLIC_KEYS`（Ed25519）验签，清单里的名称/版本/大小/SHA-256 须与 Release 对上且版本比当前新；
+    验签通过后才下载安装包到 `<tmp>/OpinionLens-update/dl-XXXX/<name>.partial`，大小或摘要不符即删除并报错，
+    对上后才改名为 `<name>` 并返回其路径。每一跳重定向都须是 https 且 host ∈ {github.com, codeload.github.com, *githubusercontent.com}。
+    进度通过 `app:updateProgress {received,total,percent}` 推送。未固定公钥或 Release 没有签名清单时一律拒绝，用户只能去发布页。
+  - `app:runUpdateInstaller(path)` → 只允许运行上一步刚通过校验的那个文件；启动前按记录的大小与 SHA-256 复核，
+    被改动则删除并拒绝，通过后 `shell.openPath` 启动。`app:openPath` 拒绝打开 `<tmp>/OpinionLens-update/` 下的任何路径。
 - **数据目录可迁移（2026-11-13）**：默认 `%APPDATA%\OpinionLens`（源码运行 `app/data`），用户可改到其他盘。
   - 位置记录固定写在 `%APPDATA%\OpinionLens\user-config.json`（`{dataDir, dataDirUpdatedAt}`）——不跟着数据目录走，
     否则换盘后找不到自己的配置；`app:info` 增补 `dataDirDefault / dataDirCustom / userConfigPath`。
