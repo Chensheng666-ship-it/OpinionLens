@@ -14,6 +14,7 @@
    ``sctapi.ftqq.com`` / ``api.day.app`` / 自建 bark host / 通用 webhook 仅 https）；
    测试模式（环境变量 ``NOTIFY_TEST_MODE=1``）放开 http 与任意 host，供离线 fake server 使用；
    测试模式下可用 ``NOTIFY_TEST_HTTP_BASE=http://127.0.0.1:<port>`` 覆盖内置 host；
+   出站请求**不跟随任何重定向**（3xx 视为永久失败），只连接校验过的那个 URL；
 3. **密钥不出本模块**：secret 只作为内存参数传入；日志/错误/审计里出现的 URL 一律脱敏
    （只保留 scheme + host + 路径模板），异常文本会去掉 secret 串与本地路径；
 4. 发送失败不抛异常：统一返回 :class:`SendResult`，由 ``notify_service`` 决定重试/熔断。
@@ -606,6 +607,24 @@ def _parse_json(raw: bytes) -> Any:
         return None
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """拒绝跟随任何重定向：出站校验只覆盖调用方给出的 URL，跳转目标（协议/主机/地址）从未被校验。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401, ANN001
+        return None
+
+
+_OPENER: Optional[urllib.request.OpenerDirector] = None
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    # 与 urlopen 一致在首次请求时创建：HTTPSHandler 构造时就读取系统 CA。
+    global _OPENER
+    if _OPENER is None:
+        _OPENER = urllib.request.build_opener(_NoRedirectHandler)
+    return _OPENER
+
+
 def _request(
     url: str,
     data: Optional[bytes] = None,
@@ -616,8 +635,23 @@ def _request(
     final_headers = {"User-Agent": USER_AGENT}
     final_headers.update(headers or {})
     request = urllib.request.Request(url, data=data, headers=final_headers, method=method)
-    with urllib.request.urlopen(request, timeout=float(timeout)) as response:  # noqa: S310 - 已过白名单校验
-        return int(getattr(response, "status", 200) or 200), response.read(8192)
+    try:
+        response = _opener().open(request, timeout=float(timeout))  # noqa: S310 - 已过白名单校验，且不跟随重定向
+    except urllib.error.HTTPError as exc:
+        code = int(getattr(exc, "code", 0) or 0)
+        if 300 <= code < 400:
+            exc.close()
+            raise ChannelConfigError(
+                f"通知地址返回重定向（HTTP {code}），出于安全考虑不跟随；请直接填写最终的 https 地址"
+            ) from None
+        raise
+    with response:
+        status = int(getattr(response, "status", 200) or 200)
+        if 300 <= status < 400:
+            raise ChannelConfigError(
+                f"通知地址返回重定向（HTTP {status}），出于安全考虑不跟随；请直接填写最终的 https 地址"
+            )
+        return status, response.read(8192)
 
 
 def _post_json(
