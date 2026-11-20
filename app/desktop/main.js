@@ -22,7 +22,16 @@ const fs = require('node:fs');
 const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
-const { isNewer, pickInstallerAsset } = require('./update');
+const {
+  isNewer,
+  pickInstallerAsset,
+  pickSignatureAsset,
+  parseUpdateSignature,
+  verifyUpdateSignature,
+  checkSignedUpdateMatches,
+  UPDATE_SIGNING_PUBLIC_KEYS,
+  MAX_SIGNATURE_BYTES,
+} = require('./update');
 
 // -----------------------------------------------------------------------------
 // 路径与常量
@@ -864,19 +873,61 @@ const UPDATE_REPO = process.env.FS_UPDATE_REPO || 'SolitudeZY/OpinionLens';
 const UPDATE_TIMEOUT_MS = 12_000;
 const UPDATE_DOWNLOAD_TIMEOUT_MS = 60_000;
 const ALLOWED_DOWNLOAD_HOSTS = ['github.com', 'objects.githubusercontent.com', 'githubusercontent.com', 'codeload.github.com'];
+const ALLOWED_API_HOSTS = ['api.github.com'];
+const UPDATE_MAX_REDIRECTS = 5;
+const UPDATE_MAX_JSON_BYTES = 4 * 1024 * 1024;
+const UPDATE_DIR = path.join(os.tmpdir(), 'OpinionLens-update');
+
+// 主进程自己拉到的 Release 里选中的安装包；下载只认它，不认 renderer 传来的任意地址。
+let pendingUpdate = null;
+// 已按固定公钥验签、且字节摘要对上的安装包；运行前按这里记录的摘要复核。
+let verifiedUpdate = null;
+let updateDownloadInFlight = false;
+
+class UntrustedRedirectError extends Error {}
 
 function userAgent() {
   return `OpinionLens/${app.getVersion()} (+https://github.com/${UPDATE_REPO})`;
 }
 
-/** GET 一个 JSON 接口（跟随一次 3xx）。 */
-function httpGetJson(url, timeoutMs = UPDATE_TIMEOUT_MS) {
+function isAllowedHttpsUrl(raw, hosts) {
+  try {
+    const parsed = new URL(String(raw || ''));
+    if (parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    return hosts.some((item) => host === item || host.endsWith('.' + item));
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
+ * GET，并在每一跳 3xx 时重新校验目标仍是 https 且在名单内；最终返回 200 的响应流。
+ * 名单外的跳转以 UntrustedRedirectError 拒绝。
+ */
+function httpsGetTrusted(url, hosts, headers, timeoutMs, redirectsLeft = UPDATE_MAX_REDIRECTS) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { 'User-Agent': userAgent(), Accept: 'application/vnd.github+json' } }, (res) => {
+    if (!isAllowedHttpsUrl(url, hosts)) {
+      reject(new UntrustedRedirectError('更新地址不在允许名单内，已拒绝'));
+      return;
+    }
+    const req = https.get(url, { headers: { 'User-Agent': userAgent(), ...headers } }, (res) => {
       const status = res.statusCode || 0;
       if (status >= 300 && status < 400 && res.headers.location) {
         res.resume();
-        httpGetJson(new URL(res.headers.location, url).toString(), timeoutMs).then(resolve, reject);
+        let next;
+        try { next = new URL(res.headers.location, url).toString(); } catch (_) { next = ''; }
+        if (redirectsLeft <= 0) {
+          reject(new UntrustedRedirectError('更新地址跳转次数过多，已拒绝'));
+          return;
+        }
+        if (!isAllowedHttpsUrl(next, hosts)) {
+          let host = '';
+          try { host = new URL(next).host; } catch (_) { host = '无效地址'; }
+          reject(new UntrustedRedirectError(`更新地址跳转到不受信任的主机（${host}），已拒绝`));
+          return;
+        }
+        httpsGetTrusted(next, hosts, headers, timeoutMs, redirectsLeft - 1).then(resolve, reject);
         return;
       }
       if (status !== 200) {
@@ -884,16 +935,36 @@ function httpGetJson(url, timeoutMs = UPDATE_TIMEOUT_MS) {
         reject(new Error(`HTTP ${status}`));
         return;
       }
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(body)); } catch (_) { reject(new Error('响应不是合法 JSON')); }
-      });
+      resolve(res);
     });
     req.setTimeout(timeoutMs, () => req.destroy(new Error(`请求超时（${timeoutMs}ms）`)));
     req.on('error', reject);
   });
+}
+
+/** GET 一个小文本（有大小上限），跳转规则同 httpsGetTrusted。 */
+async function httpGetText(url, hosts, maxBytes, headers = {}, timeoutMs = UPDATE_TIMEOUT_MS) {
+  const res = await httpsGetTrusted(url, hosts, headers, timeoutMs);
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let received = 0;
+    res.on('data', (chunk) => {
+      received += chunk.length;
+      if (received > maxBytes) {
+        res.destroy(new Error('响应体过大'));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    res.on('error', reject);
+    res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+  });
+}
+
+/** GET 一个 JSON 接口（只跟随 api.github.com 内的跳转）。 */
+async function httpGetJson(url, timeoutMs = UPDATE_TIMEOUT_MS) {
+  const body = await httpGetText(url, ALLOWED_API_HOSTS, UPDATE_MAX_JSON_BYTES, { Accept: 'application/vnd.github+json' }, timeoutMs);
+  try { return JSON.parse(body); } catch (_) { throw new Error('响应不是合法 JSON'); }
 }
 
 /** 兜底：/releases/latest 的 302 Location 里解析 tag（匿名 API 限流时仍能判断有没有新版）。 */
@@ -925,6 +996,7 @@ async function fetchLatestRelease() {
   try {
     const release = await httpGetJson(apiUrl);
     const tag = String(release.tag_name || release.name || '').trim();
+    const download = pickInstallerAsset(release.assets, tag);
     return {
       source: 'api',
       tag,
@@ -932,9 +1004,11 @@ async function fetchLatestRelease() {
       notes: String(release.body || '').slice(0, 4000),
       htmlUrl: String(release.html_url || `https://github.com/${UPDATE_REPO}/releases/tag/${tag}`),
       publishedAt: String(release.published_at || ''),
-      download: pickInstallerAsset(release.assets, tag),
+      download,
+      signature: download ? pickSignatureAsset(release.assets, download.name) : null,
     };
   } catch (error) {
+    if (error instanceof UntrustedRedirectError) throw error;
     const htmlUrl = `https://github.com/${UPDATE_REPO}/releases/latest`;
     try {
       const tag = await httpResolveLatestTag();
@@ -946,6 +1020,7 @@ async function fetchLatestRelease() {
         htmlUrl,
         publishedAt: '',
         download: null,
+        signature: null,
         warning: `GitHub API 不可用（${error.message}），已按跳转地址解析版本；只能引导到发布页下载`,
       };
     } catch (fallbackError) {
@@ -954,46 +1029,103 @@ async function fetchLatestRelease() {
   }
 }
 
-/** 流式下载到本地文件，返回 {path,size}。进度通过 onProgress(received,total) 回报。 */
-function downloadToFile(url, destPath, onProgress, timeoutMs = UPDATE_DOWNLOAD_TIMEOUT_MS) {
+/**
+ * 流式下载到一个新建文件（'wx'，不覆盖已有文件），边写边算 SHA-256；超过 maxBytes 立即中止。
+ * 返回 {path,size,sha256,head}，head 为前 2 字节。进度通过 onProgress(received,total) 回报。
+ */
+async function downloadToFile(url, destPath, maxBytes, onProgress, timeoutMs = UPDATE_DOWNLOAD_TIMEOUT_MS) {
+  const res = await httpsGetTrusted(url, ALLOWED_DOWNLOAD_HOSTS, {}, timeoutMs);
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { 'User-Agent': userAgent() } }, (res) => {
-      const status = res.statusCode || 0;
-      if (status >= 300 && status < 400 && res.headers.location) {
-        res.resume();
-        downloadToFile(new URL(res.headers.location, url).toString(), destPath, onProgress, timeoutMs).then(resolve, reject);
+    const total = Number(res.headers['content-length'] || 0);
+    if (total > maxBytes) {
+      res.destroy();
+      reject(new Error('安装包大小与签名清单不符'));
+      return;
+    }
+    const hash = crypto.createHash('sha256');
+    const headChunks = [];
+    let headLen = 0;
+    let received = 0;
+    let failed = false;
+    const out = fs.createWriteStream(destPath, { flags: 'wx' });
+    const fail = (error) => {
+      if (failed) return;
+      failed = true;
+      res.destroy();
+      // 等写句柄真正关闭再交给调用方删除（Windows 上未关闭的文件删不掉）
+      if (out.closed) reject(error);
+      else out.once('close', () => reject(error));
+      out.destroy();
+    };
+    res.on('data', (chunk) => {
+      received += chunk.length;
+      if (received > maxBytes) {
+        fail(new Error('安装包大小与签名清单不符'));
         return;
       }
-      if (status !== 200) {
-        res.resume();
-        reject(new Error(`HTTP ${status}`));
-        return;
+      hash.update(chunk);
+      if (headLen < 2) {
+        headChunks.push(chunk);
+        headLen += chunk.length;
       }
-      const total = Number(res.headers['content-length'] || 0);
-      let received = 0;
-      const out = fs.createWriteStream(destPath);
-      res.on('data', (chunk) => {
-        received += chunk.length;
-        try { onProgress(received, total); } catch (_) { /* 进度回调失败不影响下载 */ }
-      });
-      res.on('error', reject);
-      out.on('error', reject);
-      out.on('finish', () => out.close(() => resolve({ path: destPath, size: received, total })));
-      res.pipe(out);
+      try { onProgress(received, total || maxBytes); } catch (_) { /* 进度回调失败不影响下载 */ }
     });
-    req.setTimeout(timeoutMs, () => req.destroy(new Error(`下载超时（${timeoutMs}ms）`)));
-    req.on('error', reject);
+    res.on('error', fail);
+    out.on('error', fail);
+    out.on('finish', () => out.close(() => {
+      if (failed) return;
+      resolve({
+        path: destPath,
+        size: received,
+        sha256: hash.digest('hex'),
+        head: Buffer.concat(headChunks).subarray(0, 2),
+      });
+    }));
+    res.pipe(out);
+  });
+}
+
+/** 按文件当前内容计算 {size, sha256}。 */
+function hashFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    let size = 0;
+    const input = fs.createReadStream(filePath);
+    input.on('data', (chunk) => {
+      size += chunk.length;
+      hash.update(chunk);
+    });
+    input.on('error', reject);
+    input.on('end', () => resolve({ size, sha256: hash.digest('hex') }));
   });
 }
 
 function isAllowedDownloadUrl(raw) {
-  try {
-    const parsed = new URL(String(raw || ''));
-    if (parsed.protocol !== 'https:') return false;
-    const host = parsed.hostname.toLowerCase();
-    return ALLOWED_DOWNLOAD_HOSTS.some((item) => host === item || host.endsWith('.' + item));
-  } catch (_) {
-    return false;
+  return isAllowedHttpsUrl(raw, ALLOWED_DOWNLOAD_HOSTS);
+}
+
+function samePath(a, b) {
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+/** 目标（按真实路径，消除 8.3 短名/符号链接）是否落在更新目录内。 */
+function isInsideUpdateDir(target) {
+  const resolve = (p) => {
+    try { return fs.realpathSync.native(p); } catch (_) { return path.resolve(p); }
+  };
+  const root = resolve(UPDATE_DIR);
+  const abs = resolve(target);
+  const norm = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  return norm(abs) === norm(root) || norm(abs).startsWith(norm(root) + path.sep);
+}
+
+function discardVerifiedUpdate() {
+  const record = verifiedUpdate;
+  verifiedUpdate = null;
+  if (record && record.dir) {
+    try { fs.rmSync(record.dir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
   }
 }
 
@@ -1069,6 +1201,9 @@ function registerIpc() {
       return { ok: false, error: '路径无效' };
     }
     const abs = path.resolve(targetPath);
+    if (isInsideUpdateDir(abs)) {
+      return { ok: false, error: '更新安装包只能通过「运行安装包」启动', path: abs };
+    }
     const error = await shell.openPath(abs);
     return { ok: !error, error: error || null, path: abs };
   });
@@ -1116,10 +1251,19 @@ function registerIpc() {
   // ---- 版本更新 ------------------------------------------------------------
   ipcMain.handle('app:checkUpdate', async () => {
     const current = app.getVersion();
+    pendingUpdate = null;
     try {
       const release = await fetchLatestRelease();
       const hasUpdate = isNewer(current, release.tag);
       appendMainLog(`检查更新：当前 v${current} / 最新 ${release.tag}（hasUpdate=${hasUpdate}, source=${release.source}）`);
+      if (hasUpdate && release.download) {
+        pendingUpdate = {
+          current,
+          tag: release.tag,
+          installer: release.download,
+          signature: release.signature || null,
+        };
+      }
       return {
         ok: true,
         current,
@@ -1130,6 +1274,7 @@ function registerIpc() {
         notes: release.notes,
         publishedAt: release.publishedAt,
         download: release.download,
+        verifiable: !!(release.signature && UPDATE_SIGNING_PUBLIC_KEYS.length > 0),
         source: release.source,
         warning: release.warning || '',
       };
@@ -1141,21 +1286,52 @@ function registerIpc() {
 
   ipcMain.handle('app:downloadUpdate', async (event, payload) => {
     const url = payload && typeof payload.url === 'string' ? payload.url.trim() : '';
-    const rawName = payload && typeof payload.name === 'string' ? payload.name.trim() : '';
     if (!url || !isAllowedDownloadUrl(url)) {
       return { ok: false, error: '下载地址无效（仅支持 GitHub https 地址）' };
     }
-    const safeName = (rawName || 'OpinionLens-Setup.exe').replace(/[\\/:*?"<>|]/g, '_').slice(-120);
-    const destPath = path.join(os.tmpdir(), 'OpinionLens-update', safeName);
-    try {
-      fs.mkdirSync(path.dirname(destPath), { recursive: true });
-    } catch (error) {
-      return { ok: false, error: `创建临时目录失败：${error.message}` };
+    const pending = pendingUpdate;
+    if (!pending || url !== pending.installer.url) {
+      return { ok: false, error: '下载地址不是本次检查更新选中的安装包，请重新检查更新' };
     }
-    const sender = event.sender;
-    let lastSent = 0;
+    if (UPDATE_SIGNING_PUBLIC_KEYS.length === 0 || !pending.signature) {
+      return { ok: false, error: '该版本没有可验证的发布签名，已拒绝在应用内安装；请打开发布页手动下载' };
+    }
+    if (updateDownloadInFlight) return { ok: false, error: '安装包正在下载中' };
+    updateDownloadInFlight = true;
+    discardVerifiedUpdate();
+    let workDir = '';
     try {
-      const result = await downloadToFile(url, destPath, (received, total) => {
+      // 先验签：清单里的名称/版本/大小/摘要都由固定公钥担保，之后的下载只能逐字节对上它。
+      let manifest;
+      try {
+        const text = await httpGetText(pending.signature.url, ALLOWED_DOWNLOAD_HOSTS, MAX_SIGNATURE_BYTES);
+        manifest = parseUpdateSignature(text);
+      } catch (error) {
+        appendMainLog(`更新包签名清单无效：${error.message}`);
+        return { ok: false, error: `签名清单无效，已拒绝下载：${String(error.message || error)}` };
+      }
+      if (!verifyUpdateSignature(manifest, UPDATE_SIGNING_PUBLIC_KEYS)) {
+        appendMainLog('更新包签名校验失败');
+        return { ok: false, error: '安装包签名校验失败，已拒绝下载' };
+      }
+      const mismatch = checkSignedUpdateMatches(manifest, {
+        installerName: pending.installer.name,
+        tag: pending.tag,
+        current: pending.current,
+      });
+      if (mismatch) return { ok: false, error: `${mismatch}，已拒绝下载` };
+
+      try {
+        fs.mkdirSync(UPDATE_DIR, { recursive: true });
+        workDir = fs.mkdtempSync(path.join(UPDATE_DIR, 'dl-'));
+      } catch (error) {
+        return { ok: false, error: `创建临时目录失败：${error.message}` };
+      }
+      const partialPath = path.join(workDir, `${manifest.name}.partial`);
+      const finalPath = path.join(workDir, manifest.name);
+      const sender = event.sender;
+      let lastSent = 0;
+      const result = await downloadToFile(pending.installer.url, partialPath, manifest.size, (received, total) => {
         const now = Date.now();
         if (now - lastSent < 200 && received !== total) return;
         lastSent = now;
@@ -1167,20 +1343,33 @@ function registerIpc() {
           });
         } catch (_) { /* 窗口已关闭 */ }
       });
-      // 基础校验：Windows 安装包必须是 PE（MZ 头），防止把错误页保存成 exe
-      const head = Buffer.alloc(2);
-      const fd = fs.openSync(destPath, 'r');
-      try { fs.readSync(fd, head, 0, 2, 0); } finally { fs.closeSync(fd); }
-      if (head.toString('latin1') !== 'MZ') {
-        fs.rmSync(destPath, { force: true });
-        return { ok: false, error: '下载内容不是有效的 Windows 安装包（可能被网络代理拦截）' };
+      if (result.size !== manifest.size || result.sha256 !== manifest.sha256) {
+        throw new Error('安装包内容与签名清单不符');
       }
-      appendMainLog(`更新包下载完成：${destPath}（${(result.size / 1048576).toFixed(1)} MB）`);
-      return { ok: true, path: destPath, size: result.size };
+      // 摘要已与签名清单一致；MZ 头只用来拦截签错了文件的情况，不作为可信依据
+      if (result.head.toString('latin1') !== 'MZ') {
+        throw new Error('签名对应的文件不是 Windows 安装包');
+      }
+      fs.renameSync(partialPath, finalPath);
+      verifiedUpdate = {
+        path: finalPath,
+        dir: workDir,
+        name: manifest.name,
+        version: manifest.version,
+        size: manifest.size,
+        sha256: manifest.sha256,
+      };
+      workDir = '';
+      appendMainLog(`更新包下载完成并通过签名校验：${finalPath}（${(result.size / 1048576).toFixed(1)} MB）`);
+      return { ok: true, path: finalPath, size: result.size };
     } catch (error) {
       appendMainLog(`更新包下载失败：${error.message}`);
-      try { fs.rmSync(destPath, { force: true }); } catch (_) { /* ignore */ }
       return { ok: false, error: `下载失败：${String(error.message || error)}` };
+    } finally {
+      if (workDir) {
+        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+      }
+      updateDownloadInFlight = false;
     }
   });
 
@@ -1188,15 +1377,25 @@ function registerIpc() {
     if (typeof filePath !== 'string' || !filePath.trim()) {
       return { ok: false, error: '安装包路径无效' };
     }
-    const abs = path.resolve(filePath);
-    const tmpRoot = path.resolve(os.tmpdir(), 'OpinionLens-update');
-    if (!abs.toLowerCase().startsWith(tmpRoot.toLowerCase() + path.sep)) {
-      return { ok: false, error: '只允许运行本应用下载到临时目录的安装包' };
+    const record = verifiedUpdate;
+    if (!record || !samePath(filePath, record.path)) {
+      return { ok: false, error: '只允许运行本应用刚下载并通过签名校验的安装包' };
     }
-    if (!fs.existsSync(abs)) return { ok: false, error: '安装包不存在，请重新下载' };
-    const error = await shell.openPath(abs);
+    let actual;
+    try {
+      actual = await hashFile(record.path);
+    } catch (_) {
+      discardVerifiedUpdate();
+      return { ok: false, error: '安装包不存在，请重新下载' };
+    }
+    if (verifiedUpdate !== record || actual.size !== record.size || actual.sha256 !== record.sha256) {
+      discardVerifiedUpdate();
+      appendMainLog('更新安装包在校验后被改动，已拒绝运行');
+      return { ok: false, error: '安装包在校验后被改动，已拒绝运行，请重新下载' };
+    }
+    const error = await shell.openPath(record.path);
     if (error) return { ok: false, error };
-    appendMainLog(`已启动更新安装包：${path.basename(abs)}`);
+    appendMainLog(`已启动更新安装包：${record.name}（v${record.version}）`);
     return { ok: true };
   });
 
