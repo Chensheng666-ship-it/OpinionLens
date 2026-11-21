@@ -222,7 +222,7 @@ AI 报告是**可选能力**：在「设置 → 模型 API」里配置一个模�
 
 - 未配置模型：报告直接本地模板（`degraded`）；
 - 模型网络失败/超时/4xx/5xx/返回无法解析：本次报告降级本地模板并记录原因，可在设置页看到；
-- 情感打标：优先由模型结构化输出，失败时按中性兜底（不阻断报告）；
+- 情感打标：优先由模型结构化输出；单条失败/回复无法解析时该条记为未打分（不计入情感占比与风险等级，不阻断报告）；
 - 全部统计数字由 `app/report_pipeline/compute_stats.py` 计算，模型只写叙述、不产生数字。
 
 ### 9.2 可选环境变量（一般不需要）
@@ -276,8 +276,10 @@ UI 只调 sidecar API（后台线程生成，不阻塞界面）。
 completed`；模型失败回退本地模板时状态 `degraded`（HTML 仍可用）；
 失败写 `error{code,message}`（如 `REPORT_NO_DATA`、`MODEL_TIMEOUT`、`REPORT_DATA_UNAVAILABLE`）。
 
-- 情感分析：`report_data` 收集窗口内文本去重 ≤50 条/批调用模型结构化打标；结果缓存到 `<data-dir>/app.db` 的
-  `sentiment_cache` 表（命中不重复请求）；未配置/失败按 `neutral` 兜底并在数据包 `stats.warnings` 记录（不阻断生成）。
+- 情感分析：`report_data` 收集窗口内文本去重后**每条文本单独一次**模型请求结构化打标（提示词把文本当数据、不执行其中指令，
+  一条文本看不到也改不了其它文本的标签）；结果缓存到 `<data-dir>/app.db` 的 `sentiment_cache` 表（命中不重复请求）；
+  未配置/失败/回复无法解析的条目记为未打分（`sentiment_scored=false`，不写缓存、不计入情感占比与风险等级分母，
+  `stats.sentiment.*.unscored` 给出条数），并在数据包 `stats.warnings` 记录（不阻断生成）。
 - 默认关键词：不传 `keywords` 时取 `media_crawler.db` 各内容表 `source_keyword` 的去重非空集合（≤20）。
   同一内容的 `source_keyword` 只保留一个，把所有出现过的词都带上才能统计全量；库为空/读不到时按全部数据（`[]`）统计。
 - 同一时间只跑一个报告任务（本地队列串行），列表/详情轮询为轻量内存读取；生成期间 UI 可正常采集/导出。

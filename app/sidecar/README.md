@@ -214,7 +214,7 @@ Invoke-RestMethod -Method Post "$base/api/runs/$runId/resume" -Headers $h -Conte
   不写日志、不回渲染进程；PATCH 不传 `api_key` = 保留，`clear_secret: true` 清空；
 - API：`GET/POST /api/llm/providers`、`PATCH/DELETE /api/llm/providers/{id}`、
   `POST /api/llm/providers/{id}/test`（同步 ping）、`POST /api/llm/providers/{id}/default`；
-- 报告流程：`report_data.build_report_package`（情感打标走模型批量结构化输出，失败中性兜底）
+- 报告流程：`report_data.build_report_package`（情感打标逐条请求模型结构化输出，失败条目记为未打分、不计入占比）
   → `LocalLLMClient.generate_narrative`（只输出 narrative JSON，容忍 Markdown 围栏/前后文字，校验必填字段）
   → `local_report.render_local_report`（本地模板渲染 `v{n}.html`，版本历史/修订沿用旧逻辑）；
 - 降级：未配置 provider / 模型调用失败 / 输出不合法/过短 → 本地模板报告（`status=degraded`、
@@ -223,5 +223,5 @@ Invoke-RestMethod -Method Post "$base/api/runs/$runId/resume" -Headers $h -Conte
 - 报告事件（进程内 `events.bus`）：`report.finished` / `report.degraded`（`report:{id}:v{version}:...`）、
   `report.failed`（含 no-data）/ `report.cancelled` / 重启中断，通知服务订阅后推送；
 - 离线自测：`test_llm.py`（provider CRUD/脱敏/DPAPI roundtrip、OpenAI+Anthropic 协议、错误分类、
-  narrative 提取、情感分批、报告 completed/degraded/修订/事件集成），不联网、不需要真实 Key：
+  narrative 提取、情感逐条打标、报告 completed/degraded/修订/事件集成），不联网、不需要真实 Key：
   `& $PY tests\python\test_llm.py`。
