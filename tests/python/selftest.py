@@ -630,9 +630,9 @@ def phase0_report_unit(
         rows = client.analyze_sentiment(items)
         sizes = fake_llm.sentiment_batch_sizes()
         report.check(
-            "LocalLLMClient.analyze_sentiment ≤50 条/批（120→50/50/20）且 id 对齐",
+            "LocalLLMClient.analyze_sentiment 逐条请求（120 次 × 1 条）且 id 对齐",
             len(rows) == 120
-            and sizes == [50, 50, 20]
+            and sizes == [1] * 120
             and {str(row.get("id")) for row in rows}
             == {f"item_{index}" for index in range(120)},
             f"rows={len(rows)} sizes={sizes}",

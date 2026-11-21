@@ -7,8 +7,8 @@ report_sentiment.py — 情感批处理 / 缓存 / neutral 兜底（P1-1 拆分�
   2. 标签归一化：中文/英文 → `positive|neutral|negative`（`normalize_sentiment_label`）；
   3. `analyze_dataset_sentiment()`：文本去重 → 读缓存（同 `text_hash` 命中）→ 唯一文本按
      `batch_size` 分批调用 analyzer → 写缓存 → 写回 dataset.contents/comments；
-  4. 兜底：analyzer 未配置 / 抛异常 / 返回缺失 → 对应项 neutral，**不写缓存**（下次可重试），
-     并把原因记进返回值与 warnings（报告继续生成）。
+  4. 兜底：analyzer 未配置 / 抛异常 / 返回缺失 → 对应项 `sentiment_scored=False`（展示占位 neutral），
+     **不写缓存**（下次可重试），也不计入情感占比与风险等级分母；原因记进返回值与 warnings（报告继续生成）。
 
 情感回调契约（与 app-sidecar-dev 对齐）：
   analyzer(texts: list[{"id": str, "text": str}]) -> list[{"id": str,
@@ -33,6 +33,8 @@ from report_common import (
 )
 
 SENTIMENT_CACHE_TABLE = "sentiment_cache"
+# text_hash 覆盖打分方案 + 文本：旧方案（多条文本共用一次模型请求）写下的标签不再命中复用。
+SENTIMENT_SCORING_SCHEME = "single-text@v2"
 SENTIMENT_CACHE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sentiment_cache (
     platform   TEXT NOT NULL,
@@ -203,6 +205,18 @@ def _sentiment_text(item: Dict[str, Any]) -> str:
     return _truncate(item.get("text") or "", 800)
 
 
+def _text_hash(text: str) -> str:
+    return hashlib.sha256(f"{SENTIMENT_SCORING_SCHEME}\n{text}".encode("utf-8")).hexdigest()
+
+
+def _mark_unscored(item: Dict[str, Any]) -> None:
+    # sentiment 只是展示/schema 占位；sentiment_scored=False 的条目不进入情感占比与风险分母。
+    item["sentiment"] = "neutral"
+    item["sentiment_scored"] = False
+    item["sentiment_raw"] = ""
+    item["_sentiment_reason"] = ""
+
+
 def analyze_dataset_sentiment(
     dataset: Any,
     sentiment_analyzer: Optional[Callable[[List[Dict[str, Any]]], Any]],
@@ -216,7 +230,8 @@ def analyze_dataset_sentiment(
     对 dataset.contents/comments 批量情感分析并写回 sentiment（positive/neutral/negative）。
 
     流程：文本去重 → 读缓存（同 text_hash 命中）→ 唯一文本分批调用 analyzer → 写缓存 → 写回 dataset。
-    analyzer 为 None / 抛异常 / 返回缺失 → 对应文本 neutral 兜底（不写缓存，下次可重试）。
+    analyzer 为 None / 抛异常 / 返回缺失 → 对应文本 `sentiment_scored=False`（不写缓存，下次可重试；
+    compute_stats 不把它们计入情感占比 / 风险等级）。
     返回统计信息（写入 stats.data_quality.sentiment）。
     """
     warnings = warnings if warnings is not None else []
@@ -255,13 +270,14 @@ def analyze_dataset_sentiment(
     for item in items:
         item_id = str(item.get("content_id") if item["kind"] == "content" else item.get("comment_id"))
         text = _sentiment_text(item)
-        text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        text_hash = _text_hash(text)
         item["_sentiment_text_hash"] = text_hash
         platform_code = item["_platform_code"]
         cached = cache.get((platform_code, item["kind"], item_id))
-        if cached and cached.get("text_hash") == text_hash:
-            sentiment = normalize_sentiment_label(cached.get("sentiment")) or "neutral"
-            item["sentiment"] = sentiment
+        cached_label = normalize_sentiment_label(cached.get("sentiment")) if cached else None
+        if cached and cached_label and cached.get("text_hash") == text_hash:
+            item["sentiment"] = cached_label
+            item["sentiment_scored"] = True
             item["sentiment_raw"] = cached.get("sentiment") or ""
             item["_sentiment_reason"] = cached.get("reason") or ""
             info["cache_hits"] += 1
@@ -270,17 +286,15 @@ def analyze_dataset_sentiment(
         pending_texts[text_hash] = text
         item_entries.append((item, text_hash, ""))
 
-    # 2) 无 analyzer / 无待分析：全部 neutral 兜底（无缓存时）
+    # 2) 无 analyzer / 无待分析：全部标为未打分（无缓存时）
     if not item_entries:
         return info
     if not callable(sentiment_analyzer):
         for item, text_hash, _ in item_entries:
-            item["sentiment"] = "neutral"
-            item["sentiment_raw"] = ""
-            item["_sentiment_reason"] = ""
+            _mark_unscored(item)
         info["fallback_neutral_items"] = len(item_entries)
         info["fallback_neutral_texts"] = len(pending_texts)
-        warnings.append("sentiment_analyzer 未配置：情感按 neutral 兜底（未写缓存）")
+        warnings.append("sentiment_analyzer 未配置：情感未打分（不计入情感占比与风险等级，未写缓存）")
         return info
 
     # 3) 分批调用 analyzer（唯一文本）
@@ -305,11 +319,12 @@ def analyze_dataset_sentiment(
             info["errors"].append(message)
             warnings.append(message)
             continue
+        chunk_ids = {text_hash for text_hash, _ in chunk}
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
             entry_id = str(entry.get("id") or "")
-            if entry_id:
+            if entry_id in chunk_ids:
                 results[entry_id] = entry
 
     # 4) 写回 dataset + 写缓存
@@ -318,13 +333,12 @@ def analyze_dataset_sentiment(
         entry = results.get(text_hash)
         label = normalize_sentiment_label(entry.get("sentiment")) if entry else None
         if entry is None or label is None:
-            item["sentiment"] = "neutral"
-            item["sentiment_raw"] = ""
-            item["_sentiment_reason"] = ""
+            _mark_unscored(item)
             info["fallback_neutral_items"] += 1
             continue
         reason = _truncate(entry.get("reason") or "", 500)
         item["sentiment"] = label
+        item["sentiment_scored"] = True
         item["sentiment_raw"] = _text(entry.get("sentiment"))
         item["_sentiment_reason"] = reason
         info["analyzed_items"] += 1
@@ -337,12 +351,18 @@ def analyze_dataset_sentiment(
             "sentiment": label,
             "reason": reason,
         })
-    fallback_texts = {text_hash for text_hash, _ in texts} - set(results.keys())
+    scored_texts = {
+        text_hash for text_hash, entry in results.items()
+        if normalize_sentiment_label(entry.get("sentiment"))
+    }
+    fallback_texts = {text_hash for text_hash, _ in texts} - scored_texts
     info["fallback_neutral_texts"] = len(fallback_texts)
     if fallback_texts:
-        warnings.append(f"情感分析有 {len(fallback_texts)} 条文本未返回结果，已按 neutral 兜底")
+        warnings.append(
+            f"情感分析有 {len(fallback_texts)} 条文本未得到有效结果，未打分（不计入情感占比与风险等级）"
+        )
     if info["errors"]:
-        warnings.append(f"情感分析失败 {len(info['errors'])} 个批次，失败批次内文本按 neutral 兜底")
+        warnings.append(f"情感分析失败 {len(info['errors'])} 个批次，失败批次内文本未打分")
 
     if cache_entries:
         try:
@@ -356,6 +376,7 @@ def analyze_dataset_sentiment(
 __all__ = [
     "SENTIMENT_CACHE_SCHEMA",
     "SENTIMENT_CACHE_TABLE",
+    "SENTIMENT_SCORING_SCHEME",
     "_sentiment_text",
     "analyze_dataset_sentiment",
     "connect_app_db",

@@ -123,19 +123,26 @@ def _ratio(part: int, total: int, digits: int = 4) -> float:
     return round(part / total, digits)
 
 
+def _is_sentiment_scored(item: Dict[str, Any]) -> bool:
+    return item.get("sentiment_scored") is not False
+
+
 def _sentiment_block(items: List[Dict[str, Any]]) -> Dict[str, Any]:
-    counter = collections.Counter(item["sentiment"] for item in items)
-    total = len(items)
+    # 模型未打分的条目只记数，不进分母：否则坏回复/打分失败会按中性稀释负面占比。
+    scored = [item for item in items if _is_sentiment_scored(item)]
+    counter = collections.Counter(item["sentiment"] for item in scored)
+    total = len(scored)
     return {
         "positive": {"count": counter.get("positive", 0), "ratio": _ratio(counter.get("positive", 0), total)},
         "neutral": {"count": counter.get("neutral", 0), "ratio": _ratio(counter.get("neutral", 0), total)},
         "negative": {"count": counter.get("negative", 0), "ratio": _ratio(counter.get("negative", 0), total)},
         "total": total,
+        "unscored": len(items) - total,
     }
 
 
 def _dominant_sentiment(items: List[Dict[str, Any]]) -> str:
-    counter = collections.Counter(item["sentiment"] for item in items)
+    counter = collections.Counter(item["sentiment"] for item in items if _is_sentiment_scored(item))
     if not counter:
         return "中性为主"
     label = max(counter.items(), key=lambda kv: (kv[1], kv[0]))[0]
@@ -478,6 +485,11 @@ def compute_stats(
             f"阈值：<{RISK_THRESHOLDS['low']:.0%} 为低、"
             f"{RISK_THRESHOLDS['low']:.0%}~{RISK_THRESHOLDS['medium']:.0%} 为中、>{RISK_THRESHOLDS['medium']:.0%} 为高）；"
             f"负面内容 {negative_events_count} 起、负面评论 {comment_negative_count} 条"
+            + (
+                f"；{sentiment['overall']['unscored']} 条未获得模型情感结果，不计入占比"
+                if sentiment["overall"]["unscored"]
+                else ""
+            )
         ),
     }
 

@@ -770,8 +770,8 @@ def test_sentiment(check: Checker, server: FakeLLMServer, tmp_dir: Path) -> None
         sizes = server.sentiment_batch_sizes()
         indexed = {str(row.get("id")): row for row in rows}
         check.check(
-            "analyze_sentiment 120 条自动 ≤50 分批（50/50/20）",
-            len(rows) == 120 and sizes == [50, 50, 20],
+            "analyze_sentiment 120 条逐条请求（每次请求只含 1 条文本）",
+            len(rows) == 120 and sizes == [1] * 120,
             f"rows={len(rows)} sizes={sizes}",
         )
         check.check(
