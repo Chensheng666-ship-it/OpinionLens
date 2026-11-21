@@ -730,8 +730,9 @@ def test_split_equivalence(media_db: str) -> None:
           json.dumps(package["stats"]["report"]["period"], ensure_ascii=False))
     check("平台排名覆盖 7 平台", len(package["stats"]["platform_ranking"]) == 7,
           str(len(package["stats"]["platform_ranking"])))
-    check("无 analyzer 时情感全部 neutral 兜底",
-          package["stats"]["sentiment"]["overall"]["neutral"]["count"] == 14
+    check("无 analyzer 时情感全部未打分（不计入占比）",
+          package["stats"]["sentiment"]["overall"]["total"] == 0
+          and package["stats"]["sentiment"]["overall"]["unscored"] == 14
           and package["meta"]["sentiment"]["fallback_neutral_items"] == 14,
           json.dumps(package["stats"]["sentiment"]["overall"], ensure_ascii=False))
     check("samples 五类齐全且条数有界",
