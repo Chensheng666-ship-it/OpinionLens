@@ -360,6 +360,10 @@ contextBridge.exposeInMainWorld('fsapi', {
   - 概览「风险等级」卡片副标题显示 `重点负面事件 N 起 · 负面评论 M 条`；第四章空表显示评论区负面说明；
   - 客户端 `local_report.reconcile_narrative()` 会对模型 API 叙述做口径纠偏（无负面内容帖且风险中/高时统一改写第四节导语与说明），
     本地规则叙述 `narrator._build_negative()` 也已同步；AI 数据包 `samples` 增加 `negative_comments` 高赞负面评论样例供模型参考。
+- **叙述请求只含统计结果**：采集到的标题、正文、评论、作者、链接可能被发帖人控制，`llm_client.generate_narrative`
+  不再把 `samples` 及 stats 中的原文字段发给模型（stats 按白名单只保留数字与程序生成的标签、热词）；
+  模型输出或修订基准 `previous_narrative` 若复述采集原文片段则拒绝（报告降级本地模板 / 修订改为重写），
+  `risk.level`、`measures[].event_id/status`、`follow_ups[].event_id` 以 stats 为准。数据包结构（含 `samples`）不变。
 - 验收：`scripts/dev.ps1` 启动后能看到窗口、能真实发起扫码登录并在弹窗看到二维码。
 
 ---
