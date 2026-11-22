@@ -114,6 +114,8 @@ function Get-SizeMB([long]$Bytes) { return [math]::Round($Bytes / 1MB, 1) }
 # 0. 环境与镜像
 # -----------------------------------------------------------------------------
 Step '环境检查'
+# 安装包里的 Electron 取自 node_modules/electron/dist（electron-builder.yml 的 electronDist），
+# 不经 ELECTRON_MIRROR 下载；构建工具压缩包走镜像，但由 app-builder-lib 内置校验和验证。
 $env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
 $env:ELECTRON_BUILDER_BINARIES_MIRROR = 'https://npmmirror.com/mirrors/electron-builder-binaries/'
 $env:NPM_CONFIG_REGISTRY = 'https://registry.npmmirror.com'
@@ -140,6 +142,12 @@ $ebVersion = (Get-Content -LiteralPath (Join-Path $Desktop 'node_modules\electro
 Ok ("electron-builder {0}" -f $ebVersion)
 $electronVersion = (Get-Content -LiteralPath (Join-Path $Desktop 'node_modules\electron\package.json') -Raw | ConvertFrom-Json).version
 Note ("electron {0}（保持不变）" -f $electronVersion)
+$electronDistVersionFile = Join-Path $Desktop 'node_modules\electron\dist\version'
+Assert-FileExists $electronDistVersionFile 'electron dist\version'
+$electronDistVersion = (Get-Content -LiteralPath $electronDistVersionFile -Raw).Trim() -replace '^v', ''
+if ($electronDistVersion -ne $electronVersion) {
+    Fail ("node_modules\electron\dist 版本 {0} 与 electron 包 {1} 不一致：请在 app/desktop 重新执行 npm ci 后再构建" -f $electronDistVersion, $electronVersion)
+}
 
 $driveLetter = (Split-Path -Qualifier $Repo).TrimEnd(':')
 $freeGB = [math]::Round((Get-PSDrive -Name $driveLetter).Free / 1GB, 1)
