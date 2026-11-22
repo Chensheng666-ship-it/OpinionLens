@@ -9,6 +9,8 @@
 
 安全约定：
 * API Key 只经 :mod:`secret_store` 加密后落库（Windows DPAPI），列表/详情只回脱敏值；
+* base_url 里的用户名/密码与查询串同样拆出加密保存（``endpoint_secret_enc``），
+  ``base_url`` 列只存 ``scheme://host[:port]/path``，调用模型时才拼回；
 * 日志只记录 provider_id / kind / model / host / 状态码 / 耗时，**不记录密钥与请求体**；
 * 未配置 provider 时报告中心自动降级为本地模板（degraded），不阻塞采集与导出。
 
@@ -27,8 +29,8 @@ import re
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import urlsplit
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from urllib.parse import SplitResult, parse_qsl, quote, unquote, urlsplit
 
 from secret_store import SecretError, mask_secret, protect, unprotect
 from typing_utils import as_dict, as_list
@@ -39,6 +41,22 @@ try:  # httpx 在 MediaCrawler venv 中已安装；缺失时给出可读错误
     import httpx
 except Exception:  # pragma: no cover - 正常环境必有 httpx
     httpx = None
+
+
+class _HttpxUrlLogFilter(logging.Filter):
+    """httpx 自带的 ``HTTP Request: POST <url>`` 日志去掉查询串（拼回的地址秘密在那里）。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if httpx is not None and isinstance(record.args, tuple) and record.args:
+            record.args = tuple(
+                f"{mask_base_url(str(arg))}{arg.path}" if isinstance(arg, httpx.URL) else arg
+                for arg in record.args
+            )
+        return True
+
+
+if httpx is not None:
+    logging.getLogger("httpx").addFilter(_HttpxUrlLogFilter())
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -124,18 +142,30 @@ class LLMError(RuntimeError):
         }
 
 
+def _host_port(parsed: SplitResult) -> str:
+    """``host[:port]``（不含 userinfo）；端口非法时抛 ``ValueError``。"""
+    host = str(parsed.hostname or "")
+    if not host:
+        return ""
+    if ":" in host:
+        host = f"[{host}]"
+    port = parsed.port
+    return f"{host}:{port}" if port is not None else host
+
+
 def mask_base_url(base_url: str) -> str:
-    """脱敏展示：只保留 scheme://host[:port]，不含路径/查询参数（可能含令牌）。"""
+    """脱敏展示：只保留 scheme://host[:port]，不含用户名/密码、路径与查询参数（可能含令牌）。"""
     text = str(base_url or "").strip()
     if not text:
         return ""
     try:
         parsed = urlsplit(text)
+        host = _host_port(parsed)
     except ValueError:
-        return text.split("?", 1)[0]
-    if not parsed.scheme or not parsed.netloc:
-        return text.split("?", 1)[0]
-    return f"{parsed.scheme}://{parsed.netloc}"
+        return ""
+    if not parsed.scheme or not host:
+        return ""
+    return f"{parsed.scheme}://{host}"
 
 
 def normalize_base_url(base_url: Any) -> str:
@@ -149,12 +179,104 @@ def _ensure_http_url(base_url: Any) -> str:
         return ""
     lowered = value.lower()
     if not (lowered.startswith("http://") or lowered.startswith("https://")):
+        shown = mask_base_url(value)
         raise LLMError(
-            f"base_url 必须以 http:// 或 https:// 开头：{value[:120]}",
+            "base_url 必须以 http:// 或 https:// 开头" + (f"：{shown}" if shown else ""),
             code=CODE_INVALID_CONFIG,
             status_code=400,
         )
     return value
+
+
+#: 地址里需要与 API Key 同等保护的部分（userinfo 与整段 query 都可能是令牌）
+_ENDPOINT_SECRET_KEYS = ("username", "password", "query")
+
+
+def split_endpoint(base_url: Any) -> Tuple[str, Dict[str, str]]:
+    """拆分接口地址 → (可落库/展示的 ``scheme://host[:port]/path``, 需加密保存的部分)。
+
+    用户名、密码（已百分号解码）与整段查询串都视为秘密，只经 :func:`protect` 落库；
+    片段（``#...``）不会发给服务端，直接丢弃。
+    """
+    value = _ensure_http_url(base_url)
+    if not value:
+        return "", {}
+    try:
+        parsed = urlsplit(value)
+        host = _host_port(parsed)
+    except ValueError as exc:
+        raise LLMError(
+            "base_url 格式不正确（主机名或端口无效）",
+            code=CODE_INVALID_CONFIG,
+            status_code=400,
+        ) from exc
+    if not host:
+        raise LLMError(
+            "base_url 缺少主机名（例如 https://api.openai.com）",
+            code=CODE_INVALID_CONFIG,
+            status_code=400,
+        )
+    public = f"{parsed.scheme}://{host}{parsed.path}".rstrip("/")
+    parts: Dict[str, str] = {}
+    if parsed.username:
+        parts["username"] = unquote(parsed.username)
+    if parsed.password:
+        parts["password"] = unquote(parsed.password)
+    if parsed.query:
+        parts["query"] = parsed.query
+    return public, parts
+
+
+def _protect_endpoint_secret(public_base: str, parts: Dict[str, str]) -> str:
+    """加密保存地址秘密，并绑定拆分出它的公开地址（换 host/路径后不再随请求发出）。"""
+    clean = {key: str(parts[key]) for key in _ENDPOINT_SECRET_KEYS if parts.get(key)}
+    if not clean:
+        return ""
+    return protect(json.dumps({"base": public_base, **clean}, ensure_ascii=False))
+
+
+def _unprotect_endpoint_secret(secret_enc: Any) -> Dict[str, str]:
+    if not secret_enc:
+        return {}
+    try:
+        data = json.loads(unprotect(str(secret_enc)))
+    except (SecretError, TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {key: str(value) for key, value in data.items() if isinstance(value, str)}
+
+
+def _endpoint_parts_for(public_base: str, stored: Dict[str, str]) -> Dict[str, str]:
+    if not stored or stored.get("base") != public_base:
+        return {}
+    return {key: stored[key] for key in _ENDPOINT_SECRET_KEYS if stored.get(key)}
+
+
+def _secret_values(parts: Dict[str, str], *extra: Any) -> List[str]:
+    """需要从错误文本里抹掉的值（含百分号编码形式与查询参数逐项的值）。"""
+    values: List[str] = []
+    candidates: List[str] = [str(parts.get(key) or "") for key in _ENDPOINT_SECRET_KEYS]
+    query = str(parts.get("query") or "")
+    if query:
+        for item in query.split("&"):
+            candidates.append(item.partition("=")[2])
+        candidates.extend(value for _name, value in parse_qsl(query, keep_blank_values=True))
+    candidates.extend(str(item or "") for item in extra)
+    for candidate in candidates:
+        for form in (candidate, quote(candidate, safe="")):
+            if form and form not in values:
+                values.append(form)
+    values.sort(key=len, reverse=True)
+    return values
+
+
+def _redact(text: Any, secrets: Sequence[str]) -> str:
+    result = str(text or "")
+    for secret in secrets:
+        if secret and secret in result:
+            result = result.replace(secret, "***")
+    return result
 
 
 def openai_chat_url(base_url: str) -> str:
@@ -450,8 +572,8 @@ def _normalize_narrative(
 # LLMService：provider CRUD + 统一 chat
 # ---------------------------------------------------------------------------
 _ROW_COLUMNS = (
-    "provider_id, name, kind, base_url, model, secret_enc, extra_json, enabled, "
-    "is_default, last_test_ok, last_test_at, last_test_msg, created_at, updated_at"
+    "provider_id, name, kind, base_url, model, secret_enc, endpoint_secret_enc, extra_json, "
+    "enabled, is_default, last_test_ok, last_test_at, last_test_msg, created_at, updated_at"
 )
 
 
@@ -463,6 +585,7 @@ def _row_to_provider(row: Dict[str, Any]) -> Dict[str, Any]:
         "base_url": str(row.get("base_url") or ""),
         "model": str(row.get("model") or ""),
         "secret_enc": str(row.get("secret_enc") or ""),
+        "endpoint_secret_enc": str(row.get("endpoint_secret_enc") or ""),
         "extra": _loads(row.get("extra_json"), {}),
         "enabled": bool(row.get("enabled")),
         "is_default": bool(row.get("is_default")),
@@ -483,20 +606,49 @@ def _decrypt_secret(secret_enc: str) -> str:
         return ""
 
 
+def _public_base_url(base_url: Any) -> str:
+    try:
+        return split_endpoint(base_url)[0]
+    except LLMError:
+        return mask_base_url(str(base_url or ""))
+
+
+def _with_secrets(provider: Dict[str, Any]) -> Dict[str, Any]:
+    """内部视图：附上解密后的 ``api_key`` 与 ``endpoint_secret``（只用于发请求）。"""
+    provider = dict(provider)
+    provider["api_key"] = _decrypt_secret(provider.get("secret_enc") or "")
+    provider["endpoint_secret"] = _unprotect_endpoint_secret(
+        provider.get("endpoint_secret_enc") or ""
+    )
+    return provider
+
+
+def _request_endpoint(provider: Dict[str, Any]) -> Tuple[str, Dict[str, str]]:
+    """发请求用的 (公开地址, 地址秘密)：加密保存的秘密只配给拆出它的那个地址。"""
+    public, inline = split_endpoint(provider.get("base_url"))
+    stored = provider.get("endpoint_secret")
+    if not isinstance(stored, dict):
+        stored = _unprotect_endpoint_secret(provider.get("endpoint_secret_enc") or "")
+    parts = _endpoint_parts_for(public, stored)
+    parts.update(inline)
+    return public, parts
+
+
 def _provider_public(provider: Dict[str, Any]) -> Dict[str, Any]:
-    """渲染进程可见的 provider（绝不包含明文密钥）。"""
+    """渲染进程可见的 provider（绝不包含明文密钥，地址只含 scheme/host/port/path）。"""
     secret = _decrypt_secret(str(provider.get("secret_enc") or ""))
     public = {
         "provider_id": provider["provider_id"],
         "name": provider["name"],
         "kind": provider["kind"],
-        "base_url": provider["base_url"],
+        "base_url": _public_base_url(provider["base_url"]),
         "model": provider["model"],
         "extra": dict(provider.get("extra") or {}),
         "enabled": bool(provider.get("enabled")),
         "is_default": bool(provider.get("is_default")),
         "api_key_masked": mask_secret(secret) if secret else "",
         "secret_configured": bool(provider.get("secret_enc")),
+        "endpoint_secret_configured": bool(provider.get("endpoint_secret_enc")),
         "last_test_ok": provider.get("last_test_ok"),
         "last_test_at": provider.get("last_test_at"),
         "last_test_msg": provider.get("last_test_msg") or "",
@@ -517,6 +669,46 @@ class LLMService:
     def __init__(self, cfg: Any, state: Any = None) -> None:
         self.cfg = cfg
         self.state = state
+        if state is not None:
+            try:
+                self._migrate_endpoint_secrets()
+            except Exception:  # noqa: BLE001 - 迁移失败不阻塞启动
+                log.warning("迁移模型 API 地址中的密钥失败（下次启动重试）")
+
+    def _migrate_endpoint_secrets(self) -> None:
+        """旧版本把完整 base_url（含 userinfo/查询串）明文落库：拆出秘密改为加密保存。"""
+        rows = self._query(
+            "SELECT provider_id, base_url, endpoint_secret_enc, last_test_msg FROM llm_providers"
+        )
+        migrated = 0
+        for row in rows:
+            raw = str(row.get("base_url") or "")
+            try:
+                public, inline = split_endpoint(raw)
+            except LLMError:
+                public, inline = mask_base_url(raw), {}
+            if public == raw and not inline:
+                continue
+            if migrated == 0:
+                self._execute("PRAGMA secure_delete = ON")
+            parts = _endpoint_parts_for(
+                public, _unprotect_endpoint_secret(row.get("endpoint_secret_enc"))
+            )
+            parts.update(inline)
+            self._execute(
+                "UPDATE llm_providers SET base_url = ?, endpoint_secret_enc = ?, "
+                "last_test_msg = ? WHERE provider_id = ?",
+                (
+                    public,
+                    _protect_endpoint_secret(public, parts),
+                    _redact(row.get("last_test_msg"), _secret_values(inline)),
+                    str(row.get("provider_id") or ""),
+                ),
+            )
+            migrated += 1
+        if migrated:
+            self._execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            log.info("已将 %s 个模型 API 地址中的密钥改为加密保存", migrated)
 
     # ---- 内部：SQL -----------------------------------------------------
     def _state(self) -> Any:
@@ -583,9 +775,11 @@ class LLMService:
         return value
 
     @staticmethod
-    def _resolve_endpoint(kind: str, base_url: Any, model: Any) -> Tuple[str, str]:
-        base = str(base_url or "").strip()
-        resolved_base = _ensure_http_url(base) if base else ""
+    def _resolve_endpoint(
+        kind: str, base_url: Any, model: Any
+    ) -> Tuple[str, Dict[str, str], str]:
+        """返回 (公开 base_url, 需加密保存的地址秘密, model)。"""
+        resolved_base, endpoint_parts = split_endpoint(base_url)
         if kind == "deepseek":
             resolved_base = resolved_base or DEFAULT_BASE_URLS["deepseek"]
         if not resolved_base:
@@ -601,7 +795,7 @@ class LLMService:
                 code=CODE_INVALID_CONFIG,
                 status_code=400,
             )
-        return resolved_base, resolved_model
+        return resolved_base, endpoint_parts, resolved_model
 
     # ---- provider CRUD -------------------------------------------------
     def list_providers(self, masked: bool = True) -> List[Dict[str, Any]]:
@@ -614,22 +808,23 @@ class LLMService:
         return [_provider_public(provider) for provider in providers]
 
     def get_provider(self, provider_id: str, masked: bool = True) -> Dict[str, Any]:
-        """按 id 读取 provider；masked=False 时含解密后的 ``api_key``（内部使用）。"""
+        """按 id 读取 provider；masked=False 时含解密后的 ``api_key`` / ``endpoint_secret``（内部使用）。"""
         provider = self._require_provider(provider_id)
         if masked:
             return _provider_public(provider)
-        provider = dict(provider)
-        provider["api_key"] = _decrypt_secret(provider.get("secret_enc") or "")
-        return provider
+        return _with_secrets(provider)
 
     def create_provider(self, data: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(data, dict):
             raise LLMError("请求体必须是 JSON 对象", code=CODE_INVALID_CONFIG, status_code=400)
         kind = self._normalize_kind(data.get("kind"))
-        base_url, model = self._resolve_endpoint(kind, data.get("base_url"), data.get("model"))
+        base_url, endpoint_parts, model = self._resolve_endpoint(
+            kind, data.get("base_url"), data.get("model")
+        )
         name = _text(data.get("name"), 80) or _default_name(kind, model)
         api_key = _text(data.get("api_key"), 4000)
         secret_enc = protect(api_key) if api_key else ""
+        endpoint_secret_enc = _protect_endpoint_secret(base_url, endpoint_parts)
         extra = data.get("extra")
         if not isinstance(extra, dict):
             extra = {}
@@ -643,8 +838,9 @@ class LLMService:
         try:
             self._execute(
                 "INSERT INTO llm_providers(provider_id, name, kind, base_url, model, secret_enc, "
-                "extra_json, enabled, is_default, last_test_ok, last_test_at, last_test_msg, "
-                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '', ?, ?)",
+                "endpoint_secret_enc, extra_json, enabled, is_default, last_test_ok, "
+                "last_test_at, last_test_msg, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '', ?, ?)",
                 (
                     provider_id,
                     name,
@@ -652,6 +848,7 @@ class LLMService:
                     base_url,
                     model,
                     secret_enc,
+                    endpoint_secret_enc,
                     json.dumps(extra, ensure_ascii=False),
                     1 if enabled else 0,
                     1 if is_default else 0,
@@ -687,18 +884,31 @@ class LLMService:
             kind = self._normalize_kind(data.get("kind"))
             sets.append("kind = ?")
             params.append(kind)
-        base_url = (
-            _ensure_http_url(data.get("base_url"))
-            if "base_url" in data
-            else provider["base_url"]
-        )
+        base_url = data.get("base_url") if "base_url" in data else provider["base_url"]
         model = (
             str(data.get("model") or "").strip() if "model" in data else provider["model"]
         )
-        resolved_base, resolved_model = self._resolve_endpoint(kind, base_url, model)
+        resolved_base, endpoint_parts, resolved_model = self._resolve_endpoint(
+            kind, base_url, model
+        )
+        endpoint_secret_enc: Optional[str] = None  # None = 保留原值
         if "base_url" in data or kind != provider["kind"]:
             sets.append("base_url = ?")
             params.append(resolved_base)
+            if endpoint_parts:
+                endpoint_secret_enc = _protect_endpoint_secret(resolved_base, endpoint_parts)
+            elif not _endpoint_parts_for(
+                resolved_base, _unprotect_endpoint_secret(provider.get("endpoint_secret_enc"))
+            ):
+                # 回填同一公开地址（设置页编辑时）保留原秘密；换了地址则不再带旧秘密
+                endpoint_secret_enc = ""
+        if _as_bool(data.get("clear_endpoint_secret"), False):
+            endpoint_secret_enc = ""
+        if endpoint_secret_enc is not None and (
+            endpoint_secret_enc or provider.get("endpoint_secret_enc")
+        ):
+            sets.append("endpoint_secret_enc = ?")
+            params.append(endpoint_secret_enc)
         if "model" in data or kind != provider["kind"]:
             sets.append("model = ?")
             params.append(resolved_model)
@@ -777,7 +987,7 @@ class LLMService:
         return _provider_public(self._require_provider(provider_id))
 
     def get_default(self) -> Optional[Dict[str, Any]]:
-        """默认 provider（含解密 ``api_key``）；无默认时自愈取最早启用的一个。"""
+        """默认 provider（含解密 ``api_key`` / ``endpoint_secret``）；无默认时自愈取最早启用的一个。"""
         rows = self._query(
             f"SELECT {_ROW_COLUMNS} FROM llm_providers WHERE is_default = 1 AND enabled = 1 "
             "ORDER BY updated_at DESC LIMIT 1"
@@ -799,8 +1009,7 @@ class LLMService:
                 provider["is_default"] = True
             except LLMError:
                 pass
-        provider["api_key"] = _decrypt_secret(provider.get("secret_enc") or "")
-        return provider
+        return _with_secrets(provider)
 
     def config_summary(self) -> Dict[str, Any]:
         provider = self.get_default()
@@ -828,6 +1037,10 @@ class LLMService:
     def test_provider(self, provider_id: str) -> Dict[str, Any]:
         """发一条 ≤16 token 的 ping；不抛异常（除 provider 不存在），返回结构化结果。"""
         provider = self.get_provider(provider_id, masked=False)
+        try:
+            secrets = _secret_values(_request_endpoint(provider)[1], provider.get("api_key"))
+        except LLMError:
+            secrets = _secret_values({}, provider.get("api_key"))
         started = time.monotonic()
         try:
             reply = self.chat(
@@ -853,6 +1066,8 @@ class LLMService:
             }
             self._record_test_result(provider["provider_id"], True, "")
         except LLMError as exc:
+            error = exc.to_dict()
+            error["message"] = _redact(exc.message, secrets)
             result = {
                 "ok": False,
                 "provider_id": provider["provider_id"],
@@ -861,10 +1076,11 @@ class LLMService:
                 "model": provider["model"],
                 "latency_ms": int((time.monotonic() - started) * 1000),
                 "reply": "",
-                "error": exc.to_dict(),
+                "error": error,
             }
-            self._record_test_result(provider["provider_id"], False, exc.message[:500])
+            self._record_test_result(provider["provider_id"], False, error["message"][:500])
         except Exception as exc:  # noqa: BLE001 - 测试接口永不 500
+            message = _redact(f"{type(exc).__name__}: {exc}", secrets)
             result = {
                 "ok": False,
                 "provider_id": provider["provider_id"],
@@ -873,11 +1089,9 @@ class LLMService:
                 "model": provider["model"],
                 "latency_ms": int((time.monotonic() - started) * 1000),
                 "reply": "",
-                "error": {"code": CODE_NETWORK, "message": f"{type(exc).__name__}: {exc}"},
+                "error": {"code": CODE_NETWORK, "message": message},
             }
-            self._record_test_result(
-                provider["provider_id"], False, f"{type(exc).__name__}: {exc}"[:500]
-            )
+            self._record_test_result(provider["provider_id"], False, message[:500])
         return result
 
     def _record_test_result(self, provider_id: str, ok: bool, message: str) -> None:
@@ -953,17 +1167,27 @@ class LLMService:
         *,
         provider: Dict[str, Any],
         kind: str,
+        endpoint_parts: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
+        """``url`` 为不含秘密的公开地址；``endpoint_parts`` 只在这里拼回实际请求。"""
         if httpx is None:  # pragma: no cover - venv 一定有
             raise LLMError("httpx 未安装，无法调用模型 API", code=CODE_NETWORK)
+        parts = dict(endpoint_parts or {})
+        secrets = _secret_values(parts, provider.get("api_key"))
         provider_id = str(provider.get("provider_id") or "")
         host = mask_base_url(url)
+        request_url = url + (f"?{parts['query']}" if parts.get("query") else "")
+        request_kwargs: Dict[str, Any] = {"headers": headers, "json": payload}
+        if parts.get("username") or parts.get("password"):
+            request_kwargs["auth"] = httpx.BasicAuth(
+                parts.get("username", ""), parts.get("password", "")
+            )
         started = time.monotonic()
         try:
             with httpx.Client(
                 timeout=httpx.Timeout(timeout, connect=min(CONNECT_TIMEOUT, timeout))
             ) as client:
-                response = client.post(url, headers=headers, json=payload)
+                response = client.post(request_url, **request_kwargs)
         except httpx.TimeoutException as exc:
             log.warning(
                 "模型 API 超时：provider_id=%s kind=%s host=%s timeout=%ss",
@@ -986,13 +1210,13 @@ class LLMService:
                 type(exc).__name__,
             )
             raise LLMError(
-                f"模型 API 不可达（{mask_base_url(url)}）：{type(exc).__name__}",
+                f"模型 API 不可达（{host}）：{type(exc).__name__}",
                 code=CODE_NETWORK,
                 retryable=True,
             ) from exc
         except Exception as exc:  # noqa: BLE001 - 统一转 LLMError
             raise LLMError(
-                f"模型 API 调用异常：{type(exc).__name__}: {str(exc)[:200]}",
+                f"模型 API 调用异常：{type(exc).__name__}: {_redact(exc, secrets)[:200]}",
                 code=CODE_NETWORK,
             ) from exc
         latency_ms = int((time.monotonic() - started) * 1000)
@@ -1049,7 +1273,7 @@ class LLMService:
             latency_ms,
         )
         raise LLMError(
-            f"模型 API 请求失败（HTTP {status}）：{message[:300]}",
+            f"模型 API 请求失败（HTTP {status}）：{_redact(message, secrets)[:300]}",
             code=code,
             status_code=status,
             retryable=retryable,
@@ -1064,7 +1288,8 @@ class LLMService:
         temperature: float,
         timeout: float,
     ) -> str:
-        url = openai_chat_url(provider["base_url"])
+        public_base, endpoint_parts = _request_endpoint(provider)
+        url = openai_chat_url(public_base)
         payload = {
             "model": model,
             "messages": [
@@ -1086,6 +1311,7 @@ class LLMService:
             timeout,
             provider=provider,
             kind="openai_compatible",
+            endpoint_parts=endpoint_parts,
         )
         choices = body.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -1139,13 +1365,15 @@ class LLMService:
         }
         if system_parts:
             payload["system"] = "\n\n".join(system_parts)
+        public_base, endpoint_parts = _request_endpoint(provider)
         body = self._post_json(
-            anthropic_chat_url(provider["base_url"]),
+            anthropic_chat_url(public_base),
             self._request_headers(provider, "anthropic"),
             payload,
             timeout,
             provider=provider,
             kind="anthropic",
+            endpoint_parts=endpoint_parts,
         )
         blocks = body.get("content")
         if not isinstance(blocks, list):
@@ -1448,6 +1676,7 @@ __all__ = [
     "NARRATIVE_SYSTEM_PROMPT",
     "extract_json_value",
     "mask_base_url",
+    "split_endpoint",
     "normalize_base_url",
     "openai_chat_url",
     "anthropic_chat_url",

@@ -419,15 +419,18 @@ info/warn（error 穿透）；默认隐私模式 `minimal`（不含关键词原�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/llm/providers` | `{providers:[{provider_id,name,kind,base_url,model,enabled,is_default,secret_configured,api_key_masked,last_test_ok,last_test_at,last_test_msg,extra}], default_provider_id, kinds, degraded_fallback}` |
+| GET | `/api/llm/providers` | `{providers:[{provider_id,name,kind,base_url,model,enabled,is_default,secret_configured,endpoint_secret_configured,api_key_masked,last_test_ok,last_test_at,last_test_msg,extra}], default_provider_id, kinds, degraded_fallback}` |
 | POST | `/api/llm/providers` | `{name,kind,base_url,model,api_key,extra?,enabled?,is_default?}` → provider（脱敏） |
-| PATCH/DELETE | `/api/llm/providers/{id}` | 更新/删除；`api_key` 不传=保留，`clear_secret=true` 清空 |
+| PATCH/DELETE | `/api/llm/providers/{id}` | 更新/删除；`api_key` 不传=保留，`clear_secret=true` 清空；`base_url` 回填同一公开地址=保留地址秘密，换地址=丢弃，`clear_endpoint_secret=true` 清空 |
 | POST | `/api/llm/providers/{id}/test` | 最小 chat 探测 `{ok,latency_ms,reply,error}`（永不 500） |
 | POST | `/api/llm/providers/{id}/default` | 设为默认 |
 
 `kind`：`openai_compatible`（含 DeepSeek/Ollama/vLLM/中转站，`{base}/chat/completions`）、
 `deepseek`（OpenAI 协议，默认 base `https://api.deepseek.com`、model `deepseek-chat`）、
 `anthropic`（`{base}/v1/messages`，`x-api-key` + `anthropic-version: 2023-06-01`）。
+`base_url` 里的用户名/密码与整段查询串视为密钥：与 API Key 一样经 DPAPI 加密落库（`endpoint_secret_enc`），
+`base_url` 列与响应只保留 `scheme://host[:port]/path`，日志只记 `scheme://host[:port]`；
+调用模型时才拼回（查询串追加到请求地址，用户名/密码走 HTTP Basic）。
 报告中心使用默认 provider 生成叙述（`narrative` JSON）→ 本地 `app/report_pipeline` 渲染 HTML；
 无 provider/调用失败 → 本地模板降级（`degraded`），不会阻塞其它功能。
 

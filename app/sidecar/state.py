@@ -188,6 +188,7 @@ CREATE TABLE IF NOT EXISTS llm_providers (
     base_url     TEXT NOT NULL DEFAULT '',
     model        TEXT NOT NULL DEFAULT '',
     secret_enc   TEXT NOT NULL DEFAULT '',
+    endpoint_secret_enc TEXT NOT NULL DEFAULT '',
     extra_json   TEXT NOT NULL DEFAULT '{}',
     enabled      INTEGER NOT NULL DEFAULT 1,
     is_default   INTEGER NOT NULL DEFAULT 0,
@@ -330,6 +331,7 @@ class StateStore:
             ("runs", "account_policy_json", "TEXT NOT NULL DEFAULT ''"),
             ("run_platforms", "account_id", "TEXT NOT NULL DEFAULT ''"),
             ("run_platforms", "account_attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("llm_providers", "endpoint_secret_enc", "TEXT NOT NULL DEFAULT ''"),
         )
         for table, column, ddl in migrations:
             try:
