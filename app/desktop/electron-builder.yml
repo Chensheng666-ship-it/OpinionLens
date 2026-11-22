@@ -37,6 +37,13 @@ asar: true
 # Node 侧无原生模块，跳过 rebuild 可显著加快构建。
 npmRebuild: false
 
+# Electron 本体直接取 npm 安装好的 node_modules/electron/dist：它由 electron 包的 install.js
+# 按包内 checksums.json（随 package-lock 完整性校验）验过。不要删掉这一项让 electron-builder
+# 再去 ELECTRON_MIRROR 下载——那条路径只认镜像自己提供的 SHASUMS256.txt。
+electronDist: node_modules/electron/dist
+# 自带 dist 时 electron-builder 不再清理 default_app.asar / version，由 afterExtract 钩子补上。
+afterExtract: hooks/after-extract.js
+
 # 当前版本采用 normal 压缩以缩短构建时间；如需更小安装包可改 maximum（构建更慢）。
 compression: normal
 # 只保留实际用到的 3 种 Electron 语言包。
