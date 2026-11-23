@@ -6,7 +6,8 @@ render_html.py — 模板渲染器（确定性，不调用模型）
 输出：单文件自包含 HTML（可直接双击打开 / Electron file:// 本地渲染）
 
 关键设计：
-  * 模板里所有 {{PLACEHOLDER}} 都由本模块填充；渲染完成后若仍存在未替换占位符直接报错；
+  * 模板里所有 {{PLACEHOLDER}} 都由本模块在原始模板上单次填充（插入的值不会被再次扫描）；
+    模板中存在未提供值的占位符直接报错；
   * 所有数字来自 stats JSON，并通过 `data-stat` / `data-value` 属性写入 DOM，
     供 validate_report.py 独立复核（HTML 显示值 == stats 值）；
   * 图表数据集中在 `reportData` JSON 常量中，同样由 stats 生成，供校验脚本逐项比对；
@@ -402,6 +403,17 @@ def _read_chart_js(chart_js_path: str) -> str:
     return code
 
 
+_PLACEHOLDER_RE = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
+
+
+def _fill_template(template: str, replacements: Dict[str, str]) -> str:
+    # 只在原始模板上单次替换：已插入的值（采集标题/摘要/叙述）可能含 {{...}}，绝不能再被展开。
+    leftover = sorted({key for key in _PLACEHOLDER_RE.findall(template) if key not in replacements})
+    if leftover:
+        raise ValueError(f"模板存在未替换占位符：{leftover}")
+    return _PLACEHOLDER_RE.sub(lambda m: replacements[m.group(1)], template)
+
+
 def render_report(
     stats: Dict[str, Any],
     narrative: Dict[str, Any],
@@ -510,13 +522,7 @@ def render_report(
         "CHART_JS": _read_chart_js(chart_js_path),
     }
 
-    rendered = template
-    for key, value in replacements.items():
-        rendered = rendered.replace("{{" + key + "}}", value)
-
-    leftover = sorted(set(re.findall(r"\{\{([A-Z0-9_]+)\}\}", rendered)))
-    if leftover:
-        raise ValueError(f"模板存在未替换占位符：{leftover}")
+    rendered = _fill_template(template, replacements)
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
