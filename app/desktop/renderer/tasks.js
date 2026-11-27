@@ -41,6 +41,9 @@
      FEED_MAX_ITEMS / LOG_LINES_MAX 是前端保留上限，防止长时间运行 DOM 无界增长。 */
   var FEED_MAX_ITEMS = 120;
   var LOG_LINES_MAX = 2000;
+  /* 明细行字段提取只扫描行首这么多字符：日志行里是采集到的原文，长度不受控，
+     全部行每次轮询都会重新解析，扫描量必须有上界。 */
+  var LOG_FIELD_SCAN_MAX = 16000;
   var PLATFORM_ORDER = {};
   FS.PLATFORMS.forEach(function (p, index) { PLATFORM_ORDER[p.id] = index; });
 
@@ -1158,19 +1161,21 @@
   /** 搜索结果的标题可能带 <em> 高亮标签，展示前去掉 HTML 标签与实体 */
   function cleanLogText(text) {
     return unescapePyString(text)
-      .replace(/<[^>]*>/g, '')
+      .replace(/<[^<>]*>/g, '')
       .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ')
       .replace(/\s+/g, ' ').trim();
   }
-  /** 从 Python dict repr / JSON 行里取字段（帖子/评论明细行是单行超大 JSON）。 */
+  /** 从 Python dict repr / JSON 行里取字段（帖子/评论明细行是单行超大 JSON）。
+   *  字段值来自采集到的原文：反斜杠只能经由 `\\.` 分支消费（另一分支排除 `\`），
+   *  否则一长串反斜杠且无闭合引号时匹配会指数级回溯、卡死渲染线程。 */
   function pickLogField(text, names) {
-    var src = String(text || '');
+    var src = String(text || '').slice(0, LOG_FIELD_SCAN_MAX);
     for (var i = 0; i < names.length; i += 1) {
-      var py = new RegExp("'" + names[i] + "':\\s*'((?:\\\\.|[^'])*)'");
+      var py = new RegExp("'" + names[i] + "':\\s*'((?:\\\\.|[^'\\\\])*)'");
       var m = src.match(py);
       if (m) return cleanLogText(m[1]);
-      var js = new RegExp('"' + names[i] + '":\\s*"((?:\\\\.|[^"])*)"');
+      var js = new RegExp('"' + names[i] + '":\\s*"((?:\\\\.|[^"\\\\])*)"');
       m = src.match(js);
       if (m) return cleanLogText(m[1]);
     }
